@@ -1,6 +1,7 @@
 // userAudio.js — Smut Forge 🎧 Meus áudios
 // Importa SFX e voz do personagem direto da pasta Downloads. Tudo fica salvo no navegador (IndexedDB).
-import { TYPES, SX, audio, setUserSounds, testMix, stopAll } from './sfx.js';
+// Também guarda a URL do servidor TTS externo (XTTS/API no Colab) e usa a voz importada como referência.
+import { TYPES, SX, audio, setUserSounds, testMix, stopAll, testTts, refVoiceName, refreshTtsUi } from './sfx.js';
 
 const ctx = () => SillyTavern.getContext();
 const DB_NAME = 'smut_forge_audio';
@@ -102,7 +103,8 @@ function assignLevels() {
 
 function syncEngine() {
     assignLevels();
-    setUserSounds(items.map(i => ({ id: i.id, kind: i.kind, type: i.type, level: i.level, name: i.name, blob: i.blob, char: i.char })));
+    setUserSounds(items.map(i => ({ id: i.id, kind: i.kind, type: i.type, level: i.level, name: i.name, blob: i.blob, char: i.char, dur: i.dur })));
+    updateRefInfo();
 }
 
 // ---------- Importar ----------
@@ -178,6 +180,17 @@ async function removeItem(id) {
     syncEngine();
 }
 
+// Mostra qual voz importada será enviada como referência ao servidor TTS
+function updateRefInfo() {
+    const r = refVoiceName(ctx().name2 || '');
+    $('#sfa_tts_ref').text(r
+        ? `🎤 Referência enviada ao TTS: ${r.name}${r.dur ? ` (${r.dur.toFixed(1)}s)` : ''}`
+        : '⚠️ Nenhuma voz importada — importe na seção 2 um áudio limpo de 6–30 s da voz do personagem.');
+}
+
+const LANGS = [['pt', 'Português (pt)'], ['en', 'English (en)'], ['es', 'Español (es)'], ['fr', 'Français (fr)'], ['de', 'Deutsch (de)'],
+    ['it', 'Italiano (it)'], ['ja', '日本語 (ja)'], ['ko', '한국어 (ko)'], ['zh-cn', '中文 (zh-cn)'], ['ru', 'Русский (ru)']];
+
 function html() {
     return `
     <div id="smutforge_audio_settings">
@@ -207,9 +220,58 @@ function html() {
             <div class="menu_button" id="sfa_test">▶ Testar mixagem</div>
             <div class="menu_button" id="sfa_stop">⏹ Parar</div>
           </div>
+
+          <div class="sfa-title">4) Narração por TTS externo (XTTS / Colab)</div>
+          <label class="checkbox_label"><input type="checkbox" id="sfa_ttsOn"><span>🎙️ Narrar as respostas com o servidor TTS (sincronizado com os SFX)</span></label>
+          <label for="sfa_ttsUrl">URL da API do TTS</label>
+          <input id="sfa_ttsUrl" class="text_pole" type="text" placeholder="https://xxxx.trycloudflare.com/tts" autocomplete="off" spellcheck="false">
+          <small>Cole a URL completa do endpoint (com o caminho, ex.: <code>/tts</code>). O servidor precisa aceitar <code>POST</code> e liberar CORS.</small>
+          <div class="sfx-row2">
+            <div>
+              <label for="sfa_ttsLang">Idioma da narração</label>
+              <select id="sfa_ttsLang" class="text_pole">${LANGS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
+            </div>
+            <div>
+              <label for="sfa_ttsMode">Formato do envio</label>
+              <select id="sfa_ttsMode" class="text_pole">
+                <option value="multipart">multipart/form-data (arquivo de referência)</option>
+                <option value="json">JSON (referência em base64)</option>
+              </select>
+            </div>
+          </div>
+          <label for="sfa_ttsVol">Volume da narração</label>
+          <input id="sfa_ttsVol" type="range" min="0" max="200">
+          <small id="sfa_tts_ref"></small>
+          <details>
+            <summary>⚙️ Avançado</summary>
+            <div class="sfx-row2">
+              <div><label for="sfa_ttsFieldText">Campo do texto</label><input id="sfa_ttsFieldText" class="text_pole" type="text"></div>
+              <div><label for="sfa_ttsFieldLang">Campo do idioma</label><input id="sfa_ttsFieldLang" class="text_pole" type="text"></div>
+              <div><label for="sfa_ttsFieldRef">Campo do áudio</label><input id="sfa_ttsFieldRef" class="text_pole" type="text"></div>
+            </div>
+            <div class="sfx-row2">
+              <div><label for="sfa_ttsMaxChars">Máx. caracteres por pedido</label><input id="sfa_ttsMaxChars" class="text_pole" type="number" min="60" max="400" step="10"></div>
+              <div><label for="sfa_ttsTimeout">Timeout (segundos)</label><input id="sfa_ttsTimeout" class="text_pole" type="number" min="10" max="600" step="5"></div>
+            </div>
+          </details>
+          <div class="sfa-btns">
+            <div class="menu_button" id="sfa_tts_test">🧪 Testar conexão e voz</div>
+          </div>
         </div>
       </div>
     </div>`;
+}
+
+// Liga um campo do painel a uma configuração salva
+function bindField(id, key, { parse = (v) => v, after } = {}) {
+    const $el = $('#' + id);
+    const isCb = $el.is(':checkbox');
+    if (isCb) $el.prop('checked', !!SX()[key]); else $el.val(SX()[key]);
+    $el.on('input change', () => {
+        SX()[key] = parse(isCb ? $el.prop('checked') : $el.val());
+        ctx().saveSettingsDebounced();
+        if (after) after();
+    });
 }
 
 function bindCheckbox(id, key) {
@@ -234,6 +296,20 @@ async function init() {
     $vol.val(SX().voiceVol);
     $vol.on('input change', () => { SX().voiceVol = Number($vol.val()); ctx().saveSettingsDebounced(); });
 
+    // --- TTS externo ---
+    const trim = (v) => String(v).trim();
+    bindField('sfa_ttsOn', 'ttsEnabled', { after: () => refreshTtsUi(true) });
+    bindField('sfa_ttsUrl', 'ttsUrl', { parse: trim, after: () => refreshTtsUi(true) });
+    bindField('sfa_ttsLang', 'ttsLang');
+    bindField('sfa_ttsMode', 'ttsMode');
+    bindField('sfa_ttsVol', 'ttsVol', { parse: Number, after: () => refreshTtsUi(false) });
+    bindField('sfa_ttsFieldText', 'ttsFieldText', { parse: trim });
+    bindField('sfa_ttsFieldLang', 'ttsFieldLang', { parse: trim });
+    bindField('sfa_ttsFieldRef', 'ttsFieldRef', { parse: trim });
+    bindField('sfa_ttsMaxChars', 'ttsMaxChars', { parse: Number });
+    bindField('sfa_ttsTimeout', 'ttsTimeout', { parse: Number });
+    $('#sfa_tts_test').on('click', () => testTts(ctx().name2 || ''));
+
     $('#sfa_btn_sfx').on('click', () => $('#sfa_file_sfx').trigger('click'));
     $('#sfa_btn_voice').on('click', () => $('#sfa_file_voice').trigger('click'));
     $('#sfa_file_sfx').on('change', async function () { await doImport(this.files, 'sfx'); this.value = ''; });
@@ -249,6 +325,14 @@ async function init() {
     }
     render();
     syncEngine();
+
+    // Troca de personagem/chat → atualiza qual voz serve de referência
+    try {
+        const c = ctx();
+        const et = c.eventTypes || c.event_types;
+        if (et && et.CHAT_CHANGED) c.eventSource.on(et.CHAT_CHANGED, updateRefInfo);
+    } catch (e) { /* opcional */ }
+
     console.log('[SmutForge Áudio] pronto 🎧');
 }
 
