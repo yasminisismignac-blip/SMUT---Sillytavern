@@ -1,406 +1,139 @@
-import { CATEGORIES, PHASES, INTENSITY, DEFAULT_BANNED, DEFAULT_KEYWORDS, DEFAULT_LIMITS } from './data.js';
+// As instruções ficam em inglês porque quase todos os modelos obedecem melhor assim.
+// O idioma da narração é definido nas configurações da extensão.
 
-const MODULE = 'smut_forge';
-const KEY_BASE = 'smut_forge_base';
-const KEY_CARD = 'smut_forge_card';
-const POS_IN_CHAT = 1;   // extension_prompt_types.IN_CHAT
-const ROLE_SYSTEM = 0;   // extension_prompt_roles.SYSTEM
-
-const ctx = () => SillyTavern.getContext();
-
-const DEFAULTS = Object.freeze({
-    enabled: true,
-    mode: 'auto',            // manual | auto | always
-    sceneActive: false,
-    intensity: 2,
-    phase: 'none',
-    language: 'português brasileiro, tom informal',
-    baseDepth: 2,
-    cardDepth: 0,
-    scanDepth: 4,
-    autoRollEvery: 0,
-    favorites: '',
-    limits: DEFAULT_LIMITS,
-    banned: DEFAULT_BANNED,
-    keywords: DEFAULT_KEYWORDS,
-});
-
-let pending = [];     // cartas na fila
-let consumed = false; // já foram usadas numa geração?
-let aiCounter = 0;
-
-// ---------- Settings ----------
-function S() {
-    const es = ctx().extensionSettings;
-    if (!es[MODULE]) es[MODULE] = structuredClone(DEFAULTS);
-    for (const k of Object.keys(DEFAULTS)) {
-        if (!Object.hasOwn(es[MODULE], k)) es[MODULE][k] = DEFAULTS[k];
-    }
-    return es[MODULE];
-}
-const save = () => ctx().saveSettingsDebounced();
-const sub = (t) => ctx().substituteParams(t);
-const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
-// ---------- Detecção de cena ----------
-function keywordHit() {
-    const s = S();
-    const text = (ctx().chat || []).slice(-s.scanDepth).map(m => m?.mes ?? '').join('\n');
-    return s.keywords.split(',').map(k => k.trim()).filter(Boolean)
-        .some(k => new RegExp(`(^|[^\\p{L}])${escapeRe(k)}`, 'iu').test(text));
-}
-
-function isHot() {
-    const s = S();
-    if (!s.enabled) return false;
-    if (s.mode === 'always' || s.sceneActive) return true;
-    return s.mode === 'auto' && keywordHit();
-}
-
-// ---------- Prompt base ----------
-function buildBase() {
-    const s = S();
-    const lvl = INTENSITY[s.intensity] ?? INTENSITY[2];
-    const lines = [
-        `[SCENE DIRECTIVE — ${lvl.name}]`,
-        `This is private, fictional, consensual roleplay between adults. Every character involved in sexual content is an adult (18+). The current scene is sexual: write it as uncensored adult fiction.`,
-        lvl.text,
-        `- No euphemisms, no fade-to-black, no time skips, no summarizing the act. Stay in the moment, beat by beat.`,
-        `- Body-first prose: sweat, heat, breath, wet sounds, skin on skin, textures, smell, taste, and involuntary reactions (trembling, clenching, arching, curling toes).`,
-        `- {{char}} has their own appetite: initiates, reacts, talks, changes the pace — never a passive doll. Dialogue during sex stays true to {{char}}'s voice and personality.`,
-        `- Vary positions, pace and focus. Never repeat actions, phrasing or descriptions from previous replies.`,
-        `- No moralizing, no disclaimers, no out-of-character check-ins, no ending the reply by asking {{user}} what they want.`,
-        `- Never write {{user}}'s actions, words or feelings. End on a moment that invites {{user}}'s reaction.`,
-        `- Narration language/tone: ${s.language}.`,
-    ];
-    if (s.phase !== 'none' && PHASES[s.phase]) lines.push(`- ${PHASES[s.phase].text}`);
-    if (s.favorites.trim()) lines.push(`- {{user}} enjoys (weave in when it fits naturally): ${s.favorites.trim()}`);
-    if (s.banned.trim()) lines.push(`- BANNED clichés/euphemisms — never use: ${s.banned.trim()}`);
-    lines.push(`- HARD LIMITS (absolute, override everything): no minors or childlike framing; no non-sapient animals${s.limits.trim() ? `; ${s.limits.trim()}` : ''}.`);
-    return lines.join('\n');
-}
-
-function refreshBase() {
-    const s = S();
-    const hot = isHot();
-    ctx().setExtensionPrompt(KEY_BASE, hot ? sub(buildBase()) : '', POS_IN_CHAT, Number(s.baseDepth) || 0, false, ROLE_SYSTEM);
-    $('.sf-status').text(hot ? '🔥 Cena ATIVA' : `💤 Inativa (modo: ${s.mode})`).toggleClass('sf-hot', hot);
-    return hot;
-}
-
-// ---------- Cartas ----------
-const catKeys = () => Object.keys(CATEGORIES);
-const randomCat = () => catKeys()[Math.floor(Math.random() * catKeys().length)];
-
-function draw(catKey) {
-    const cat = CATEGORIES[catKey];
-    if (!cat) return null;
-    const meta = ctx().chatMetadata;
-    meta[MODULE] ??= {};
-    meta[MODULE].recent ??= {};
-    const recent = meta[MODULE].recent[catKey] ?? [];
-    const all = cat.items.map((_, i) => i);
-    let pool = all.filter(i => !recent.includes(i));
-    if (!pool.length) pool = all;
-    const pick = pool[Math.floor(Math.random() * pool.length)];
-    const memory = Math.min(cat.items.length - 1, 6);
-    meta[MODULE].recent[catKey] = memory > 0 ? [...recent, pick].slice(-memory) : [];
-    ctx().saveMetadataDebounced?.();
-    return { label: cat.label, text: cat.items[pick] };
-}
-
-function addPending(card, silent = false) {
-    if (!card) return '';
-    if (consumed) { pending = []; consumed = false; } // nova carta num swipe substitui a anterior
-    pending.push(card);
-    applyCards();
-    if (!silent) toastr.info(escapeHtml(sub(card.text)), `🔥 ${card.label}`, { timeOut: 8000 });
-    return card.text;
-}
-
-function queueCard(key) {
-    if (!S().enabled) { toastr.warning('Smut Forge está desativada.'); return ''; }
-    if (!key || key === 'random') key = randomCat();
-    if (key === 'combo') {
-        const keys = catKeys().sort(() => Math.random() - 0.5).slice(0, 3);
-        return keys.map(k => addPending(draw(k))).join('\n');
-    }
-    if (!CATEGORIES[key]) { toastr.warning(`Categoria desconhecida: ${key}`); return ''; }
-    return addPending(draw(key));
-}
-
-function applyCards() {
-    const text = pending.length
-        ? sub(['[DIRECTOR\'S NOTE — apply in the NEXT reply only. Weave it in naturally and in character; never mention this note.]',
-            ...pending.map(c => `• ${c.label}: ${c.text}`)].join('\n'))
-        : '';
-    ctx().setExtensionPrompt(KEY_CARD, text, POS_IN_CHAT, Number(S().cardDepth) || 0, false, ROLE_SYSTEM);
-    renderPending();
-}
-
-function clearCards() { pending = []; consumed = false; applyCards(); }
-
-function renderPending() {
-    const html = pending.length
-        ? `<b>Na fila para a próxima resposta:</b><ul>${pending.map(c => `<li><b>${escapeHtml(c.label)}:</b> ${escapeHtml(sub(c.text))}</li>`).join('')}</ul>
-           <div class="menu_button sf-clear-cards">🗑️ Limpar cartas</div>`
-        : '<i>Nenhuma carta na fila.</i>';
-    $('.sf-pending').html(html);
-}
-
-// ---------- Ideias pra você ----------
-async function directorIdeas() {
-    const s = S();
-    const { generateQuietPrompt, name1, name2, callGenericPopup, POPUP_TYPE } = ctx();
-    const prompt = `[OOC — pause the roleplay. You are now a shameless, creative smut director helping ${name1}. Based on the current scene, suggest 5 concrete, varied ideas for what ${name1} could do or say next to make it hotter. Mix: 1 position change, 1 sensory/tease move, 1 line of dirty talk ${name1} could say (written out in full), 1 power-dynamic twist, 1 wild/kinky idea that fits ${name2} and the setting. Respect these limits: ${s.limits || 'none beyond the hard limits'}. No minors, ever. Format: numbered list, **bold title** + 1–2 lines each. Write in ${s.language}. Output only the list.]`;
-    toastr.info('O diretor está pensando…', '💡 Smut Forge');
-    try {
-        const res = await generateQuietPrompt({ quietPrompt: prompt });
-        const { showdown, DOMPurify } = SillyTavern.libs;
-        const html = DOMPurify.sanitize(new showdown.Converter().makeHtml(res || '*(sem resposta)*'));
-        await callGenericPopup(`<div class="sf-ideas-out"><h3>💡 Ideias pra você</h3>${html}</div>`, POPUP_TYPE.TEXT, '', { allowVerticalScrolling: true });
-    } catch (e) {
-        console.error('[SmutForge]', e);
-        toastr.error('Falha ao gerar ideias. Veja o console.');
-    }
-}
-
-async function customCard() {
-    const txt = await ctx().Popup.show.input('✍️ Instrução livre', 'O que você quer que aconteça na próxima resposta?', '');
-    if (txt && String(txt).trim()) addPending({ label: 'Livre', text: String(txt).trim() });
-}
-
-// ---------- UI ----------
-function panelHtml() {
-    const phaseOpts = [`<option value="none">— Sem fase —</option>`,
-        ...Object.entries(PHASES).map(([k, p]) => `<option value="${k}">${p.label}</option>`)].join('');
-    const btns = Object.entries(CATEGORIES)
-        .map(([k, c]) => `<div class="menu_button" data-sf-card="${k}">${c.emoji} ${c.label}</div>`).join('');
-    return `
-    <div class="sf-panel">
-      <div class="sf-statusbar">
-        <span class="sf-status"></span>
-        <div class="menu_button sf-toggle-scene">🔥 Cena ON/OFF</div>
-      </div>
-      <label>Fase da cena</label>
-      <select class="text_pole sf-phase">${phaseOpts}</select>
-      <div class="sf-grid">${btns}</div>
-      <div class="sf-grid">
-        <div class="menu_button" data-sf-card="random">🎲 Roleta</div>
-        <div class="menu_button" data-sf-card="combo">🃏 Combo x3</div>
-        <div class="menu_button sf-custom">✍️ Instrução livre</div>
-        <div class="menu_button sf-ideas">💡 Ideias pra MIM</div>
-      </div>
-      <div class="sf-pending"></div>
-    </div>`;
-}
-
-function syncPanel() {
-    $('.sf-phase').val(S().phase);
-    refreshBase();
-    renderPending();
-}
-
-function settingsHtml() {
-    return `
-    <div id="smutforge_settings">
-      <div class="inline-drawer">
-        <div class="inline-drawer-toggle inline-drawer-header">
-          <b>🔥 Smut Forge</b>
-          <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-        </div>
-        <div class="inline-drawer-content">
-          ${panelHtml()}
-          <hr>
-          <label class="checkbox_label"><input type="checkbox" id="sf_enabled"><span>Ativar extensão</span></label>
-          <label for="sf_mode">Quando ligar o modo explícito</label>
-          <select id="sf_mode" class="text_pole">
-            <option value="manual">Manual (botão Cena ON/OFF)</option>
-            <option value="auto">Automático (palavras-chave + botão)</option>
-            <option value="always">Sempre ligado</option>
-          </select>
-          <label for="sf_intensity">Intensidade</label>
-          <select id="sf_intensity" class="text_pole">
-            <option value="1">1 — Picante (sensual e explícito)</option>
-            <option value="2">2 — Explícito (gráfico e direto)</option>
-            <option value="3">3 — Selvagem (cru, chulo, sem freio)</option>
-          </select>
-          <label for="sf_language">Idioma / tom da narração</label>
-          <input id="sf_language" class="text_pole" type="text">
-          <div class="sf-row">
-            <div><label for="sf_baseDepth">Profundidade das regras</label><input id="sf_baseDepth" class="text_pole" type="number" min="0" max="20"></div>
-            <div><label for="sf_cardDepth">Profundidade das cartas</label><input id="sf_cardDepth" class="text_pole" type="number" min="0" max="10"></div>
-          </div>
-          <div class="sf-row">
-            <div><label for="sf_scanDepth">Msgs analisadas (auto)</label><input id="sf_scanDepth" class="text_pole" type="number" min="1" max="20"></div>
-            <div><label for="sf_autoRollEvery">Carta automática a cada N respostas (0 = off)</label><input id="sf_autoRollEvery" class="text_pole" type="number" min="0" max="20"></div>
-          </div>
-          <label for="sf_favorites">Meus kinks favoritos (o modelo usa quando encaixar)</label>
-          <textarea id="sf_favorites" class="text_pole" rows="2" placeholder="ex: puxão de cabelo, elogios, espelho, marcas de mordida"></textarea>
-          <label for="sf_limits">Meus limites (NUNCA incluir)</label>
-          <textarea id="sf_limits" class="text_pole" rows="2"></textarea>
-          <label for="sf_banned">Clichês / eufemismos proibidos</label>
-          <textarea id="sf_banned" class="text_pole" rows="3"></textarea>
-          <label for="sf_keywords">Palavras-chave do modo automático (vírgula; casam no início da palavra)</label>
-          <textarea id="sf_keywords" class="text_pole" rows="3"></textarea>
-          <div class="menu_button" id="sf_preview">👁️ Ver o que está sendo injetado</div>
-        </div>
-      </div>
-    </div>`;
-}
-
-function bindSetting(id, key, parse = v => v) {
-    const $el = $(`#${id}`);
-    const isCb = $el.is(':checkbox');
-    isCb ? $el.prop('checked', !!S()[key]) : $el.val(S()[key]);
-    $el.on('input change', () => {
-        S()[key] = isCb ? $el.prop('checked') : parse($el.val());
-        save();
-        refreshBase();
-        applyCards();
-    });
-}
-
-function bindGlobalHandlers() {
-    $(document)
-        .on('click', '[data-sf-card]', function () { queueCard(this.dataset.sfCard); })
-        .on('click', '.sf-clear-cards', clearCards)
-        .on('click', '.sf-custom', customCard)
-        .on('click', '.sf-ideas', directorIdeas)
-        .on('click', '.sf-toggle-scene', () => {
-            S().sceneActive = !S().sceneActive; save();
-            toastr.info(S().sceneActive ? 'Cena forçada: ON 🔥' : 'Cena forçada: OFF');
-            refreshBase();
-        })
-        .on('change', '.sf-phase', function () {
-            S().phase = this.value; save();
-            $('.sf-phase').val(this.value);
-            refreshBase();
-        });
-}
-
-function openPanelPopup() {
-    const { callGenericPopup, POPUP_TYPE } = ctx();
-    callGenericPopup(panelHtml(), POPUP_TYPE.DISPLAY, '', { allowVerticalScrolling: true });
-    setTimeout(syncPanel, 50);
-}
-
-async function showPreview() {
-    const { callGenericPopup, POPUP_TYPE } = ctx();
-    const base = isHot() ? sub(buildBase()) : '(regras inativas no momento — cena não detectada)';
-    const cards = pending.length ? pending.map(c => `• ${c.label}: ${sub(c.text)}`).join('\n') : '(nenhuma)';
-    await callGenericPopup(`<h3>Regras</h3><pre class="sf-pre">${escapeHtml(base)}</pre><h3>Cartas</h3><pre class="sf-pre">${escapeHtml(cards)}</pre>`,
-        POPUP_TYPE.TEXT, '', { wide: true, allowVerticalScrolling: true });
-}
-
-// ---------- Slash commands ----------
-function registerCommands() {
-    const { SlashCommandParser, SlashCommand, SlashCommandArgument, ARGUMENT_TYPE } = ctx();
-    if (!SlashCommandParser) return;
-    const arg = (description, enumList) => [SlashCommandArgument.fromProps({
-        description, typeList: [ARGUMENT_TYPE.STRING], isRequired: false, enumList,
-    })];
-
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'smut-card',
-        callback: (_a, v) => queueCard(String(v || 'random').trim()),
-        unnamedArgumentList: arg('categoria', [...catKeys(), 'random', 'combo']),
-        helpString: 'Coloca uma carta criativa na fila para a próxima resposta. Ex: <code>/smut-card posicao</code>',
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'smut-scene',
-        callback: (_a, v) => {
-            const val = String(v || 'toggle').trim();
-            S().sceneActive = val === 'toggle' ? !S().sceneActive : val === 'on';
-            save(); refreshBase();
-            return String(S().sceneActive);
-        },
-        unnamedArgumentList: arg('on | off | toggle', ['on', 'off', 'toggle']),
-        helpString: 'Força a cena explícita ON/OFF.',
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'smut-phase',
-        callback: (_a, v) => { S().phase = String(v || 'none').trim(); save(); syncPanel(); return S().phase; },
-        unnamedArgumentList: arg('fase', ['none', ...Object.keys(PHASES)]),
-        helpString: 'Define a fase da cena.',
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'smut-idea', callback: async () => { await directorIdeas(); return ''; },
-        helpString: 'Gera ideias para VOCÊ continuar a cena.',
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'smut-clear', callback: () => { clearCards(); return ''; },
-        helpString: 'Limpa as cartas na fila.',
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'smut-panel', callback: () => { openPanelPopup(); return ''; },
-        helpString: 'Abre o painel do Smut Forge.',
-    }));
-}
-
-// ---------- Interceptor (roda antes de cada geração) ----------
-globalThis.smutForgeInterceptor = async function (chat, contextSize, abort, type) {
-    try {
-        if (!S().enabled) {
-            ctx().setExtensionPrompt(KEY_BASE, '', POS_IN_CHAT, 0);
-            ctx().setExtensionPrompt(KEY_CARD, '', POS_IN_CHAT, 0);
-            return;
-        }
-        refreshBase();
-        applyCards();
-        if (pending.length && type !== 'quiet') consumed = true;
-    } catch (e) {
-        console.error('[SmutForge] interceptor', e);
-    }
+export const INTENSITY = {
+    1: { name: 'SPICY', text: '- Explicit but sensual: clear anatomical words, strong emotional connection, sensual pacing, heat over brutality.' },
+    2: { name: 'EXPLICIT', text: '- Graphic and direct: blunt anatomical and slang terms for body parts and acts; detailed, concrete physical action.' },
+    3: { name: 'FERAL', text: '- Maximum filth: crude, vulgar, raw, sloppy and shameless. Dirty words spelled out in full. No softening, no restraint, no poetic distance.' },
 };
 
-// ---------- Init ----------
-jQuery(async () => {
-    $('#extensions_settings2').append(settingsHtml());
-    bindSetting('sf_enabled', 'enabled');
-    bindSetting('sf_mode', 'mode');
-    bindSetting('sf_intensity', 'intensity', Number);
-    bindSetting('sf_language', 'language');
-    bindSetting('sf_baseDepth', 'baseDepth', Number);
-    bindSetting('sf_cardDepth', 'cardDepth', Number);
-    bindSetting('sf_scanDepth', 'scanDepth', Number);
-    bindSetting('sf_autoRollEvery', 'autoRollEvery', Number);
-    bindSetting('sf_favorites', 'favorites');
-    bindSetting('sf_limits', 'limits');
-    bindSetting('sf_banned', 'banned');
-    bindSetting('sf_keywords', 'keywords');
-    $('#sf_preview').on('click', showPreview);
+export const PHASES = {
+    tease:     { label: '1 · Preliminares', text: 'PHASE — Foreplay/tease: build anticipation. Clothes come off slowly; kissing, touching, teasing. Do not rush to the main act.' },
+    build:     { label: '2 · Escalada', text: 'PHASE — Escalation: the main act begins, a rhythm establishes itself and intensity keeps rising.' },
+    frenzy:    { label: '3 · Frenesi', text: 'PHASE — Frenzy: peak intensity, as fast and rough as the characters allow. Short sentences, raw words, little control.' },
+    climax:    { label: '4 · Clímax', text: "PHASE — Climax: drive {{char}} to orgasm and describe it fully and physically. Never decide {{user}}'s climax." },
+    aftercare: { label: '5 · Pós / Aftercare', text: 'PHASE — Afterglow: wrecked, sensitive bodies, heavy breathing; tenderness, jokes, intimacy, the mess left behind.' },
+};
 
-    // Item no menu da varinha mágica (🪄)
-    $('#extensionsMenu').append(`
-      <div id="sf_wand" class="list-group-item flex-container flexGap5 interactable" tabindex="0">
-        <div class="fa-solid fa-fire extensionsMenuExtensionButton"></div>
-        <span>Smut Forge</span>
-      </div>`);
-    $('#sf_wand').on('click', openPanelPopup);
+export const CATEGORIES = {
+    posicao: { emoji: '🔄', label: 'Posição', items: [
+        '{{char}} climbs on top facing away (reverse riding). Describe the view from behind — the arch of the back, rolling hips, hands braced on thighs — and {{char}} setting the pace.',
+        'Prone: one partner face-down, the other pressing their full body weight on top. Pinned, slow deep grinding, breath and words right against the ear and neck.',
+        'Standing against a wall: one partner lifted, legs locked around the waist. Strained muscles, gravity, the wall at the back, desperate grip.',
+        'Legs pushed up over the shoulders, folded deep. Forced eye contact, depth, the helpless feeling of being folded in half.',
+        'Lazy spooning from behind: slow and intimate, a hand wandering to the front, dirty talk whispered straight into the ear.',
+        'Edge of the bed or table: one standing, the other at the edge. Leverage, hard pace, fists in the sheets.',
+        'From behind on hands and knees: a hand in the hair or pressing between the shoulder blades to force the arch, skin slapping.',
+        'Face-sitting: thighs clamped around the head, grinding, muffled sounds, a hand in the hair steering.',
+        'Straddling on a chair or sofa: face to face, grinding, mouths almost touching, the furniture creaking.',
+        'Bent over furniture (desk, counter, sofa arm): things knocked aside, cheek against the surface, hands gripping the hips.',
+        'Mating press: knees pushed to the chest, full weight bearing down, deep and relentless, total pinned surrender.',
+        'Lotus: seated and tangled together, slow deep rocking, foreheads touching, kissing through the moans — intimate but filthy.',
+        'Kneeling oral with eye contact held the whole time: looking up, sloppy, unhurried, reactions in close-up.',
+        '69: both mouths busy, the struggle to focus on giving while receiving, moans vibrating against skin.',
+        'Sudden flip: whoever was below seizes control, rolls the other over and climbs on top — a power reversal mid-act.',
+    ]},
+    sensorial: { emoji: '💦', label: 'Sensorial', items: [
+        'Sweat: a sheen on the skin, drops rolling down the spine or chest, skin sticking and peeling apart, salt on the tongue.',
+        'Soundscape: wet sounds, skin slapping, the bed creaking, breath catching, moans changing pitch as it builds. Use onomatopoeia shamelessly but sparingly.',
+        'Involuntary reactions: trembling thighs, curling toes, clenching, hips stuttering out of rhythm, back arching off the bed, goosebumps.',
+        "Fluids and mess with zero shame: wetness, drool, slick thighs, the state of the sheets — describe it, don't hide it.",
+        'Smell and taste: musk, sweat, skin, perfume mixed with sex; the taste of skin, mouth and arousal.',
+        'Close-up: zoom in on ONE sensation and describe it in slow, extreme detail for a whole paragraph.',
+        'Visual wreckage: flushed skin, swollen lips, lust-blown pupils, messy hair, red handprints, fresh marks blooming.',
+        'Temperature contrast: hot breath on wet skin, cold air, cool sheets, a burning body against a cold surface.',
+        'Textures: stubble, hair, lace, leather, sheets twisted in fists, the friction of clothes still half on.',
+        'Oversensitivity: every touch is now too much — flinching, whimpering, squirming away and pulling back in.',
+        "Inner sensation from {{char}}'s POV: fullness, stretch, pressure, the throb building low in the belly — physical, not poetic.",
+    ]},
+    dirtytalk: { emoji: '🗣️', label: 'Dirty Talk', items: [
+        "Praise: {{char}} showers {{user}} with filthy praise — how good it feels, how perfect, how well they're doing.",
+        "Degradation (consensual, in character): crude, humiliating pet names and teasing that fit {{char}}'s personality.",
+        'Begging: {{char}} begs — specific, desperate, shameless requests broken up by moans.',
+        "Commands: short, direct orders. Don't move. Look at me. Say it. Count.",
+        'Possessive: "mine", claiming, jealousy — said low and intense.',
+        "Play-by-play: {{char}} narrates in crude detail what they're doing and what they're about to do.",
+        "Mocking desperation: {{char}} teases {{user}} for how needy they're acting.",
+        'Broken speech: sentences cut off mid-word, a name repeated, words dissolving into moans.',
+        "Heat-of-the-moment confession: {{char}} blurts out a secret fantasy, or how long they've wanted this.",
+        'Interrogation: "tell me how it feels", "whose is this?" — {{char}} stops until answered.',
+        'Accent or native tongue slips out: under pleasure {{char}} curses in their own slang, accent or language.',
+        'Whisper vs. scream: filthy words murmured against the ear, alternating with loud, uncontrolled cries.',
+    ]},
+    poder: { emoji: '⛓️', label: 'Poder', items: [
+        'Wrists pinned above the head with one hand; the other hand explores freely.',
+        'Edging: bring them to the edge and stop. Repeatedly. Permission to come has to be earned.',
+        'Brat & tamer: one partner is mouthy and defiant, the other puts them in their place — playful but firm.',
+        'Power reversal: the dominant one loses control and the submissive one takes the reins.',
+        "Worship: {{char}} devotes themselves to the other's body — slow, reverent, obsessive, mouth everywhere.",
+        "Teasing torture: deliberately slow, touching everywhere except where it's wanted.",
+        'Possessive grip on the jaw or throat: light pressure, holding the gaze, possessive — never restricting breath.',
+        '"Don\'t move": one partner is ordered to stay still, hands off, and is playfully punished for breaking it.',
+        'Marking: hickeys, bite marks, scratches down the back — {{char}} admires the marks they left.',
+        'Make them say it: {{char}} refuses to continue until the other says exactly what they want, in explicit words.',
+        'Size/strength difference: how easily one moves, lifts, holds or overpowers the other.',
+    ]},
+    fetiche: { emoji: '🔥', label: 'Fetiche / Ângulo', items: [
+        'Mirror: move the action in front of a mirror and make them watch themselves.',
+        'Blindfold / sensory deprivation: everything becomes touch, sound and anticipation.',
+        'Improvised restraints: belt, tie, scarf, sheet — hands bound, straining against them.',
+        'Temperature play: an ice cube trailing down, hot wax dripping, warm breath chasing the cold.',
+        'Spanking: counted out loud — the sting, the red handprint, the heat that follows.',
+        'Risk of getting caught: someone nearby, thin walls, a phone call — they have to stay quiet, and fail.',
+        "Overstimulation: don't stop after the climax — keep going through the shaking and the 'too much'.",
+        'Clothes half on: pushed aside, torn, or lingerie/a uniform kept on on purpose.',
+        'A toy enters the scene: its sound, the surprise, the new rhythm it forces.',
+        'Oral fixation: fingers in the mouth, sucking, drool, a thumb pressing the tongue down.',
+        'Finishing inside / breeding talk: possessive talk about filling them up, and the aftermath.',
+        'Body-part worship: thighs, feet, neck, ass, chest — pick one and obsess over it.',
+        'Marking with fluids: finishing on skin, face or chest, then a possessive look at the result.',
+        'Roleplay within the roleplay: a spontaneous persona game in the heat (stranger, teacher, rival…).',
+        'Being watched or filmed (consensual): a phone camera or an audience fuels the exhibitionism.',
+    ]},
+    selvagem: { emoji: '🐺', label: 'Selvagem / Primal', items: [
+        'Primal mode: growls, snarls, teeth, biting the shoulder or neck, chase and pin — pure instinct, zero finesse.',
+        'Scenting: {{char}} buries their face in the neck or hair and inhales deeply, addicted to the smell.',
+        'Loss of language: {{char}} is reduced to moans, curses and one or two repeated words.',
+        'Feral pace: desperate and clumsy, teeth clacking, clothes ripped, no time to fully undress.',
+        'Mating instinct: a deep urge to claim, fill and keep the other pinned until it is done.',
+        'Fantasy anatomy (ONLY if already established in the lore for an adult sapient non-human): knots, tails, horns used as handles, unusual size, texture, heat or glow — in detail.',
+        'Heat/rut (if the setting supports it): uncontrollable need, feverish skin, round after round.',
+        'Shameless mess: drool, tears of pleasure, sweat, fluids — nobody cares about looking pretty.',
+        'Destruction: bed slats crack, a lamp falls, a shirt tears in half — the force spills into the room.',
+        "Fucked-dumb: {{char}} is so overwhelmed they can't think — eyes rolling, tongue out, babbling nonsense.",
+        'Corruption moment: a reserved, "good" character finds out they are far more depraved than they thought, and embraces it.',
+        "Stretched to the limit: a big size difference — the struggle, the slow stretch, 'it won't fit' — and then it does.",
+    ]},
+    ritmo: { emoji: '🎢', label: 'Ritmo', items: [
+        'Sudden stop: freeze mid-motion, tease, make them wait… then resume much harder.',
+        'Agonizingly slow: stretch every movement into excruciating, deliberate slowness.',
+        'Accelerate into frenzy: short sentences, fast rhythm, breathing out of control.',
+        'Shift focus: drop the current focus completely and move to a different body part.',
+        "Edge of climax: tension at maximum, bodies tight, the build-up beat by beat — don't finish yet.",
+        "Long climax: describe {{char}}'s orgasm in full physical detail — waves, spasms, sounds, aftershocks.",
+        "Round two: after finishing, {{char}} isn't done — a short recovery, teasing, then starting again.",
+        'Interruption: a knock, a phone, a noise — they ignore it, or almost get caught.',
+        'Aftercare: shift from rough to tender — caresses, water, jokes, messy cuddling, soft words.',
+    ]},
+    local: { emoji: '📍', label: 'Cenário / Objeto', items: [
+        'Against the window glass: city lights, cold glass, the thrill of being seen.',
+        'Shower or bath: steam, running water, slippery skin, tiles at the back.',
+        'Kitchen counter: everything swept aside, a cold surface, quick and hungry.',
+        'In the car: cramped space, fogged windows, risk.',
+        'Desk: papers flying, the office chair, the fantasy of doing it at work.',
+        'On the floor or rug: they never made it to the bed.',
+        'Outdoors: wind, grass or sand, moonlight, the risk of exposure.',
+        'Food play: honey, whipped cream, chocolate or fruit licked off skin.',
+        'Oil: massage oil gleaming, slippery hands, bodies sliding against each other.',
+    ]},
+};
 
-    bindGlobalHandlers();
-    registerCommands();
+export const DEFAULT_LIMITS = '';
 
-    const { eventSource, eventTypes } = ctx();
-    eventSource.on(eventTypes.MESSAGE_SENT, () => { if (consumed) clearCards(); refreshBase(); });
-    eventSource.on(eventTypes.MESSAGE_RECEIVED, (_id, type) => {
-        refreshBase();
-        const s = S();
-        if (!s.enabled || !s.autoRollEvery || type === 'quiet' || !isHot()) return;
-        if (++aiCounter % s.autoRollEvery === 0) {
-            pending = []; consumed = false;
-            addPending(draw(randomCat()));
-        }
-    });
-    eventSource.on(eventTypes.CHAT_CHANGED, () => {
-        S().sceneActive = false; save();
-        aiCounter = 0;
-        clearCards();
-        syncPanel();
-    });
+export const DEFAULT_BANNED = 'ministrations, shivers down the spine, a mix of pleasure and pain, core, heat pooling in the belly, ' +
+    'membro, intimidade, centro do prazer, seu sexo, flor, gruta, ondas de prazer, um gemido escapou dos lábios, ' +
+    'mordeu o lábio inferior, corpos se tornaram um só, dança antiga';
 
-    syncPanel();
-    console.log('[SmutForge] carregada 🔥');
-});
+export const DEFAULT_KEYWORDS = 'gemid, geme, gemeu, nua, nuas, pelad, pau, buceta, rola, peito, seio, mamilo, coxa, ' +
+    'lambe, lambeu, chupa, chupou, transa, foder, fode, fodend, gozar, gozou, gozand, tesão, molhad, excitad, ' +
+    'moan, naked, cock, pussy, thrust, fuck, cum, nipple';
