@@ -1,4 +1,5 @@
 import { sfxDirective } from './sfx.js';
+import './userAudio.js';
 import { CATEGORIES, PHASES, INTENSITY, DEFAULT_BANNED, DEFAULT_KEYWORDS, DEFAULT_LIMITS } from './data.js';
 
 const MODULE = 'smut_forge';
