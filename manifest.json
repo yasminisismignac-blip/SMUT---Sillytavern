@@ -6,8 +6,8 @@
     "js": "index.js",
     "css": "style.css",
     "author": "SEU_NOME",
-    "version": "1.0.0",
-    "homePage": "https://github.com/SEU_USUARIO/SillyTavern-SmutForge",
+    "version": "1.1.0",
+    "homePage": "https://github.com/yasminisismignac-blip/SMUT---Sillytavern",
     "auto_update": true,
     "generate_interceptor": "smutForgeInterceptor"
 }
