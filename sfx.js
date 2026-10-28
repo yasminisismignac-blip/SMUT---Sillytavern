@@ -1,4 +1,4 @@
-// sfx.js — Smut Forge 🔊 v2 — sons REAIS + áudio dinâmico sensível ao contexto
+// sfx.js — Smut Forge 🔊 v2 — sons REAIS + áudio dinâmico sensível ao contexto + narração por TTS externo
 import { CATEGORIES } from './data.js';
 
 const MODULE = 'smut_forge_sfx';
@@ -10,7 +10,7 @@ const DEFAULTS = Object.freeze({
     visual: true,
     anim: true,
     sound: true,
-    autoplay: true,
+    autoplay: false,
     autodetect: true,
     prompt: true,
     density: 'med',
@@ -23,8 +23,20 @@ const DEFAULTS = Object.freeze({
     stereo: 50,
     room: 15,
     testLevel: 'auto',
+    // voz importada (Meus áudios)
     voice: true,
     voiceVol: 100,
+    // TTS externo (XTTS / API no Colab)
+    ttsEnabled: false,
+    ttsUrl: '',
+    ttsLang: 'pt',
+    ttsMode: 'multipart',      // multipart | json
+    ttsVol: 100,
+    ttsMaxChars: 200,
+    ttsTimeout: 90,
+    ttsFieldText: 'text',
+    ttsFieldLang: 'language',
+    ttsFieldRef: 'speaker_wav',
 });
 
 export function SX() {
@@ -197,7 +209,7 @@ async function fetchSounds(force) {
     loadState = 'fetching';
     renderStatus();
     RAW = [];
-    for (const k of Object.keys(LIB)) LIB[k] = LIB[k].filter(x => x.user);
+    for (const k of Object.keys(LIB)) delete LIB[k];
     loadInfo = { missing: [], broken: [], unknown: [], jsonError: null };
     warned.clear();
     let map;
@@ -266,7 +278,6 @@ async function decodeAll() {
     }
     RAW = [];
     for (const list of Object.values(LIB)) list.sort((a, b) => a.dur - b.dur);
-    await decodeUser();
     loadState = 'ready';
     renderStatus();
     const total = Object.values(LIB).reduce((n, l) => n + l.length, 0);
@@ -277,10 +288,83 @@ async function decodeAll() {
     if (loadInfo.unknown.length) toastr.warning('Categorias que eu não conheço no sounds.json: ' + few(loadInfo.unknown), '🔊 sounds.json', { timeOut: 15000 });
 }
 
+// ---------- Áudios importados pelo usuário (vêm do userAudio.js) ----------
+const USER_RAW = [];        // [{ id, kind, type, level, name, blob, char, dur }]
+const USER_DEC = new Map(); // id -> { buf, offset, dur } | null (falhou)
+const USERLIB = {};         // tipo -> [{ buf, offset, dur, level, name }]
+const USERVOICE = [];       // [{ buf, offset, dur, char, name }]
+let userBusy = false, userDirty = false;
+
+export function setUserSounds(list) {
+    USER_RAW.length = 0;
+    (list || []).forEach(i => USER_RAW.push(i));
+    userDirty = true;
+    if (AC) buildUser();
+}
+
+async function buildUser() {
+    if (!AC) return;
+    if (userBusy) { userDirty = true; return; }
+    userBusy = true;
+    try {
+        do {
+            userDirty = false;
+            const snap = USER_RAW.slice();
+            const ids = new Set(snap.map(i => i.id));
+            for (const id of Array.from(USER_DEC.keys())) if (!ids.has(id)) USER_DEC.delete(id);
+            for (const it of snap) {
+                if (USER_DEC.has(it.id)) continue;
+                try {
+                    const buf = await AC.decodeAudioData(await it.blob.arrayBuffer());
+                    const { offset, dur } = trimInfo(buf);
+                    USER_DEC.set(it.id, { buf, offset, dur });
+                } catch (e) {
+                    console.warn('[SmutForge SFX] áudio importado ilegível:', it.name, e);
+                    USER_DEC.set(it.id, null);
+                }
+            }
+            for (const k of Object.keys(USERLIB)) delete USERLIB[k];
+            USERVOICE.length = 0;
+            for (const it of snap) {
+                const d = USER_DEC.get(it.id);
+                if (!d) continue;
+                if (it.kind === 'voice') {
+                    USERVOICE.push({ buf: d.buf, offset: d.offset, dur: d.dur, char: it.char || '', name: it.name });
+                } else {
+                    (USERLIB[it.type || 'generic'] = USERLIB[it.type || 'generic'] || [])
+                        .push({ buf: d.buf, offset: d.offset, dur: d.dur, level: it.level || 'med', name: it.name });
+                }
+            }
+            for (const l of Object.values(USERLIB)) l.sort((a, b) => a.dur - b.dur);
+        } while (userDirty);
+    } finally {
+        userBusy = false;
+    }
+    renderStatus();
+}
+
+// Biblioteca final de um tipo = sons da pasta sounds/ + sons importados
+function libOf(t) {
+    const a = LIB[t] || [], b = USERLIB[t] || [];
+    if (!b.length) return a;
+    if (!a.length) return b;
+    return a.concat(b).sort((x, y) => x.dur - y.dur);
+}
+
+const sameName = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+function voiceFor(char) {
+    if (!USERVOICE.length) return null;
+    const mine = USERVOICE.filter(v => v.char && sameName(v.char, char));
+    const pool = mine.length ? mine : USERVOICE.filter(v => !v.char);
+    return pool.length ? pool[Math.floor(Math.random() * pool.length)] : null;
+}
+
 // ---------- Motor de áudio ----------
-let AC = null, MASTER = null, SEND = null;
+let AC = null, MASTER = null, SEND = null, TTSG = null;
 const VOICES = [];
 const TIMERS = new Set();
+let RUN = null;                // narração TTS em andamento
+let playingEl = null;
 const VOCAL = ['moan', 'breath', 'growl'];
 const FALLBACK = { crack: ['impact'], suck: ['wet'], throat: ['suck', 'wet'], kiss: ['suck', 'wet'], generic: ['impact', 'wet'] };
 const MAX_DUR = { impact: 1.5, crack: 1.5, kiss: 1.2, wet: 2, suck: 2.5, throat: 2, bed: 2.5, cloth: 2.5, generic: 1.5 };
@@ -303,8 +387,10 @@ export function audio() {
         SEND = AC.createGain();
         SEND.connect(conv);
         conv.connect(MASTER);
+        TTSG = AC.createGain();       // barramento da narração (TTS)
+        TTSG.connect(MASTER);
         if (loadState === 'fetched') decodeAll();
-        decodeUser();
+        if (USER_RAW.length) buildUser();
     }
     applyVolumes();
     if (AC.state === 'suspended') AC.resume();
@@ -316,6 +402,7 @@ function applyVolumes() {
     const s = SX();
     MASTER.gain.value = Number(s.volume) / 100;
     SEND.gain.value = (Number(s.room) / 100) * 0.5;
+    if (TTSG) TTSG.gain.value = clamp(Number(s.ttsVol) / 100, 0, 2);
 }
 
 function impulse(sec) {
@@ -332,7 +419,7 @@ function impulse(sec) {
 function poolFor(type, level) {
     const chain = [type].concat(FALLBACK[type] || []);
     for (const t of chain) {
-        const all = LIB[t];
+        const all = libOf(t);
         if (!all || !all.length) continue;
         const order = level === 'soft' ? ['soft', 'med'] : level === 'hard' ? ['hard', 'med'] : ['med'];
         for (const lv of order) {
@@ -419,94 +506,22 @@ function playSample(smp, t, I, type) {
     return realDur;
 }
 
-// ---------- Áudios importados pelo usuário (painel "Meus áudios") ----------
-let USER = [];                 // [{ id, kind: 'sfx'|'voice', type, level, name, blob, char }]
-const VOICE_LIB = [];          // [{ buf, dur, name, char }]
-const DECODED = new Map();     // id -> AudioBuffer (evita decodificar de novo)
-let VOICE_NOW = null, lastVoice = null;
-let userBusy = false, userAgain = false;
-const hasLib = () => Object.values(LIB).some(l => l.length);
-
-export function setUserSounds(items) {
-    USER = Array.isArray(items) ? items : [];
-    decodeUser();
-}
-
-async function decodeUser() {
-    if (!AC) return;
-    if (userBusy) { userAgain = true; return; }
-    userBusy = true;
-    try {
-        do {
-            userAgain = false;
-            const sfx = [], voices = [];
-            for (const it of USER.slice()) {
-                try {
-                    let buf = DECODED.get(it.id);
-                    if (!buf) {
-                        buf = await AC.decodeAudioData(await it.blob.arrayBuffer());
-                        DECODED.set(it.id, buf);
-                    }
-                    if (it.kind === 'voice') {
-                        voices.push({ buf, dur: buf.duration, name: it.name, char: it.char || '' });
-                    } else {
-                        const { offset, dur } = trimInfo(buf);
-                        sfx.push({ type: it.type || 'generic', level: it.level || 'med', buf, offset, dur, name: it.name, user: true });
-                    }
-                } catch (e) {
-                    console.warn('[SmutForge SFX] não consegui ler o áudio importado', it.name, e);
-                }
-            }
-            for (const k of Object.keys(LIB)) LIB[k] = LIB[k].filter(x => !x.user);
-            for (const x of sfx) (LIB[x.type] = LIB[x.type] || []).push(x);
-            for (const list of Object.values(LIB)) list.sort((a, b) => a.dur - b.dur);
-            VOICE_LIB.splice(0, VOICE_LIB.length, ...voices);
-        } while (userAgain);
-    } finally {
-        userBusy = false;
-    }
-    renderStatus();
-}
-
-// Escolhe uma voz importada (do personagem, se tiver) com duração parecida com a do texto
-function startVoice(charName, textLen, delay = 0) {
-    const s = SX();
-    if (!s.voice || !VOICE_LIB.length) return 0;
-    const ac = audio();
-    if (!ac) return 0;
-    const est = clamp(textLen * 0.06, 2, 40);
-    const wanted = String(charName || '').toLowerCase();
-    let pool = VOICE_LIB.filter(v => v.char && wanted && v.char.toLowerCase() === wanted);
-    if (!pool.length) pool = VOICE_LIB;
-    pool = pool.slice().sort((a, b) => Math.abs(a.dur - est) - Math.abs(b.dur - est)).slice(0, 3);
-    let v = pool[Math.floor(Math.random() * pool.length)];
-    if (pool.length > 1 && v === lastVoice) v = pool.find(x => x !== lastVoice) || v;
-    lastVoice = v;
-    const src = ac.createBufferSource();
-    src.buffer = v.buf;
-    const g = ac.createGain();
-    g.gain.value = clamp(Number(s.voiceVol) / 100, 0, 2);
+// Voz importada do personagem (gemidos/ofegos), tocada junto com o efeito
+function playVoiceClip(vc, t, I) {
+    const vol = clamp(Number(SX().voiceVol) / 100, 0, 1.5) * lerp(0.8, 1, I);
+    const src = AC.createBufferSource();
+    src.buffer = vc.buf;
+    const g = AC.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.01);
     src.connect(g);
     g.connect(MASTER);
-    src.start(ac.currentTime + 0.02 + delay);
-    const node = { src, g };
-    VOICE_NOW = node;
-    src.onended = () => { if (VOICE_NOW === node) VOICE_NOW = null; };
-    return v.dur;
-}
-
-// Botão "Testar mixagem": voz + efeitos tocando juntos
-export function testMix(charName = '') {
-    stopAll();
-    const ac = audio();
-    if (!ac) return;
-    if (!VOICE_LIB.length && !hasLib()) {
-        toastr.info('Importe ao menos um áudio primeiro 🎧', '🔊 Smut Forge', { timeOut: 4000 });
-        return;
-    }
-    const vdur = startVoice(charName, 160) || 6;
-    const seq = [['wet', 'shlick', 0.12], ['impact', 'plap…', 0.3], ['moan', 'aahn~', 0.45], ['impact', 'PLAP! PLAP! PLAP!', 0.65], ['moan', 'AAAHN!', 0.85]];
-    for (const [type, text, f] of seq) playSfx(type, text, intensityOf(text), f * vdur);
+    g.connect(SEND);
+    src.start(t, vc.offset, vc.dur + 0.02);
+    const v = { src, g };
+    VOICES.push(v);
+    src.onended = () => { const i = VOICES.indexOf(v); if (i >= 0) VOICES.splice(i, 1); };
+    while (VOICES.length > 12) fadeVoice(VOICES.shift());
 }
 
 function noSoundWarn(type) {
@@ -514,19 +529,21 @@ function noSoundWarn(type) {
         toastr.info('Os sons ainda estão carregando… tenta de novo em um segundinho 🎧', '🔊 Smut Forge', { timeOut: 2500 });
         return;
     }
-    const key = ((loadState === 'none' || loadState === 'error') && !hasLib()) ? '__none' : type;
+    const key = (loadState === 'none' || loadState === 'error') ? '__none' : type;
     if (warned.has(key)) return;
     warned.add(key);
     const msg = key === '__none'
-        ? 'Nenhum som real instalado ainda (falta a pasta sounds/ com o sounds.json). 🎧'
+        ? 'Nenhum som real instalado ainda (falta a pasta sounds/ com o sounds.json, ou importe em "Meus áudios"). 🎧'
         : `Sem arquivo de som para "${esc(LABELS[type] || type)}". Adicione um no sounds.json 🎧`;
     toastr.info(msg, '🔊 Smut Forge', { timeOut: 6000 });
 }
 
 // Toca uma onomatopeia inteira com ritmo de acordo com a intensidade.
 // "PLAP PLAP PLAP" suave = batidas espaçadas; forte = batidas rápidas, acelerando.
-export function playSfx(type, text, I = 0.5, delay = 0) {
-    if (!SX().sound) return 0;
+// opts.noVoice: não toca a voz importada junto (usado durante a narração TTS)
+export function playSfx(type, text, I = 0.5, delay = 0, opts = {}) {
+    const s = SX();
+    if (!s.sound) return 0;
     const ac = audio();
     if (!ac) return 0;
     const level = levelOf(I);
@@ -550,17 +567,371 @@ export function playSfx(type, text, I = 0.5, delay = 0) {
         }
     }
     if (!played) { noSoundWarn(type); return 0; }
+    if (s.voice && !opts.noVoice && VOCAL.includes(type)) {
+        const vc = voiceFor(opts.char !== undefined ? opts.char : ctx().name2);
+        if (vc) playVoiceClip(vc, start + 0.01, I);
+    }
     return end - start;
 }
 
-let playingEl = null;
+export function testMix(charName = '') {
+    if (!SX().sound) { toastr.info('Ative "Sons ao clicar" no painel de Sons para testar.', '🎧 Smut Forge', { timeOut: 4000 }); return; }
+    const ac = audio();
+    if (!ac) return;
+    stopAll();
+    const seq = [['wet', 'shlick', 0.3], ['impact', 'plap', 0.5], ['impact', 'PLAP! PLAP! PLAP!', 0.9], ['moan', 'aahn~', 0.6], ['breath', 'haah…', 0.2]];
+    let delay = 0;
+    for (const [type, text, I] of seq) {
+        const d = playSfx(type, text, I, delay, { char: charName });
+        delay += d + 0.35;
+    }
+}
+
 export function stopAll() {
     TIMERS.forEach(clearTimeout);
     TIMERS.clear();
+    if (RUN) {
+        const r = RUN;
+        RUN = null;
+        r.dead = true;
+        r.ctrls.forEach(c => { try { c.abort('stop'); } catch (e) { /* ok */ } });
+        if (AC) r.srcs.splice(0).forEach(fadeVoice);
+    }
     if (AC) VOICES.splice(0).forEach(fadeVoice);
-    if (AC && VOICE_NOW) { fadeVoice(VOICE_NOW); VOICE_NOW = null; }
     playingEl = null;
     updatePlayButtons();
+}
+
+// ---------- Narração por TTS externo (XTTS / API no Colab) ----------
+const TTS_CACHE = new Map();   // chave -> AudioBuffer
+const REF_B64 = new Map();     // id da referência -> base64 (modo JSON)
+let warnedNoRef = false;
+
+export const ttsReady = () => {
+    const s = SX();
+    return !!(s.ttsEnabled && /^https?:\/\//i.test(String(s.ttsUrl || '').trim()));
+};
+
+// Escolhe o áudio de referência: voz do personagem atual > voz sem personagem > qualquer voz
+function pickRef(char) {
+    const voices = USER_RAW.filter(i => i.kind === 'voice' && i.blob);
+    if (!voices.length) return null;
+    const mine = voices.filter(v => v.char && sameName(v.char, char));
+    const free = voices.filter(v => !v.char);
+    const pool = mine.length ? mine : (free.length ? free : voices);
+    const score = (v) => (v.dur && v.dur <= 30 ? v.dur : 0.1);  // XTTS vai bem com 6–30s
+    return pool.slice().sort((a, b) => score(b) - score(a))[0];
+}
+export function refVoiceName(char) {
+    const r = pickRef(char);
+    return r ? { name: r.name, dur: r.dur } : null;
+}
+
+const blobToB64 = (blob) => new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result).split(',')[1] || '');
+    r.onerror = () => rej(r.error);
+    r.readAsDataURL(blob);
+});
+function b64ToAb(b64) {
+    const bin = atob(String(b64).replace(/^data:[^,]*,/, ''));
+    const u = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    return u.buffer;
+}
+
+function makeLimiter(n) {
+    let active = 0;
+    const q = [];
+    const next = () => {
+        if (active >= n || !q.length) return;
+        active++;
+        const { fn, res, rej } = q.shift();
+        fn().then(res, rej).finally(() => { active--; next(); });
+    };
+    return (fn) => new Promise((res, rej) => { q.push({ fn, res, rej }); next(); });
+}
+
+function cleanForTts(t) {
+    return String(t)
+        .replace(/[\p{Extended_Pictographic}\u2661\u2665\uFE0F]/gu, ' ')
+        .replace(/[*_~`#>|\[\]{}]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+// Quebra o texto em pedaços ≤ max caracteres, respeitando frases (o XTTS corta frases longas)
+function chunkText(text, max) {
+    const out = [];
+    const sentences = text.match(/[^.!?…]+[.!?…]*["”')]*\s*/g) || [text];
+    let cur = '';
+    const push = () => { if (cur.trim()) out.push(cur.trim()); cur = ''; };
+    for (let s of sentences) {
+        s = s.trim();
+        if (!s) continue;
+        while (s.length > max) {
+            let cut = s.lastIndexOf(',', max - 1);
+            if (cut < max * 0.4) cut = s.lastIndexOf(' ', max - 1);
+            const take = cut < 1 ? max : cut + 1;
+            push();
+            out.push(s.slice(0, take).trim());
+            s = s.slice(take).trim();
+        }
+        if (!s) continue;
+        if (cur && (cur + ' ' + s).length > max) push();
+        cur = cur ? cur + ' ' + s : s;
+    }
+    push();
+    return out.filter(c => /[\p{L}\p{N}]/u.test(c));
+}
+
+// Monta a linha do tempo da mensagem: [texto][SFX][texto][SFX]... na ordem em que aparecem
+function buildTimeline(el, max) {
+    const items = [];
+    let buf = '';
+    let lastBlk = null, lastSpan = null;
+    const flush = () => {
+        const t = cleanForTts(buf);
+        buf = '';
+        if (!/[\p{L}\p{N}]/u.test(t)) return;
+        chunkText(t, max).forEach(c => items.push({ kind: 'tts', text: c }));
+    };
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+        const n = walker.currentNode, p = n.parentElement;
+        if (!p || p.closest('.sf-playall, code, pre, style, script, textarea')) continue;
+        const sp = p.closest('.sf-sfx');
+        if (sp) {
+            if (sp !== lastSpan) { flush(); items.push({ kind: 'sfx', span: sp }); lastSpan = sp; }
+            continue;
+        }
+        lastSpan = null;
+        const blk = p.closest('p, li, blockquote, h1, h2, h3, h4') || el;
+        if (lastBlk && blk !== lastBlk && !/[.!?…:;,]\s*$/.test(buf)) buf += '.';
+        lastBlk = blk;
+        buf += ' ' + n.nodeValue;
+    }
+    flush();
+    // limite de segurança
+    let ttsCount = 0;
+    return items.filter(it => it.kind !== 'tts' || ++ttsCount <= 40);
+}
+
+function reportTtsError(e, run) {
+    if (run) { if (run.reported) return; run.reported = true; }
+    console.warn('[SmutForge TTS]', e);
+    toastr.error(esc(e && e.message ? e.message : e), '🎙️ TTS externo', { timeOut: 12000 });
+}
+
+// POST para o servidor TTS → AudioBuffer
+async function requestTts(text, ref, run) {
+    const s = SX();
+    const url = String(s.ttsUrl || '').trim();
+    const key = [url, ref ? ref.id : '-', s.ttsLang, text].join('|');
+    if (TTS_CACHE.has(key)) return TTS_CACHE.get(key);
+    if (run && run.failed) throw new Error('skip');
+    const ac = audio();
+    if (!ac) throw new Error('Seu navegador não suporta áudio.');
+
+    const timeoutSec = Math.max(10, Number(s.ttsTimeout) || 90);
+    const ctrl = new AbortController();
+    if (run) run.ctrls.add(ctrl);
+    const timer = setTimeout(() => ctrl.abort('timeout'), timeoutSec * 1000);
+    try {
+        const fText = (s.ttsFieldText || 'text').trim();
+        const fLang = (s.ttsFieldLang || 'language').trim();
+        const fRef = (s.ttsFieldRef || 'speaker_wav').trim();
+        const headers = {};
+        if (/ngrok/i.test(url)) headers['ngrok-skip-browser-warning'] = '1';
+        let body;
+        if (s.ttsMode === 'json') {
+            headers['Content-Type'] = 'application/json';
+            const o = { [fText]: text, [fLang]: s.ttsLang };
+            if (ref) {
+                if (!REF_B64.has(ref.id)) REF_B64.set(ref.id, await blobToB64(ref.blob));
+                o[fRef] = REF_B64.get(ref.id);
+            }
+            body = JSON.stringify(o);
+        } else {
+            body = new FormData();
+            body.append(fText, text);
+            body.append(fLang, s.ttsLang);
+            if (ref) body.append(fRef, ref.blob, ref.name || 'referencia.wav');
+        }
+
+        const res = await fetch(url, { method: 'POST', headers, body, signal: ctrl.signal });
+        if (!res.ok) {
+            const detail = (await res.text().catch(() => '')).replace(/\s+/g, ' ').slice(0, 200);
+            throw new Error(`O servidor TTS respondeu HTTP ${res.status}. ${detail}`);
+        }
+        const ct = (res.headers.get('content-type') || '').toLowerCase();
+        let ab;
+        if (ct.includes('json')) {
+            const j = await res.json();
+            const b64 = j.audio_base64 || j.audio || j.data || j.wav;
+            const link = j.audio_url || j.url || j.file;
+            if (b64 && typeof b64 === 'string') ab = b64ToAb(b64);
+            else if (link) ab = await (await fetch(new URL(link, url).href, { signal: ctrl.signal })).arrayBuffer();
+            else throw new Error('A resposta JSON não tem áudio (esperado: audio_base64 ou audio_url).');
+        } else {
+            ab = await res.arrayBuffer();
+        }
+        let buf;
+        try {
+            buf = await ac.decodeAudioData(ab);
+        } catch (e) {
+            throw new Error('A resposta do servidor não é um áudio válido (wav/mp3/ogg).');
+        }
+        TTS_CACHE.set(key, buf);
+        if (TTS_CACHE.size > 60) TTS_CACHE.delete(TTS_CACHE.keys().next().value);
+        return buf;
+    } catch (e) {
+        if (ctrl.signal.aborted) {
+            const timedOut = ctrl.signal.reason === 'timeout';
+            const err = new Error(timedOut ? `Tempo esgotado (${timeoutSec}s) esperando o servidor TTS.` : 'cancelado');
+            err.fatal = timedOut;
+            throw err;
+        }
+        if (e instanceof TypeError) {
+            const err = new Error('Não consegui conectar ao servidor TTS: URL errada, Colab/túnel desligado, CORS bloqueado, ou http em página https.');
+            err.fatal = true;
+            throw err;
+        }
+        throw e;
+    } finally {
+        clearTimeout(timer);
+        if (run) run.ctrls.delete(ctrl);
+    }
+}
+
+function newRun() {
+    return { dead: false, failed: false, reported: false, ctrls: new Set(), srcs: [] };
+}
+
+function scheduleBuf(run, buf, at) {
+    const src = AC.createBufferSource();
+    src.buffer = buf;
+    const g = AC.createGain();
+    src.connect(g);
+    g.connect(TTSG);
+    src.start(at);
+    const v = { src, g };
+    run.srcs.push(v);
+    src.onended = () => { const i = run.srcs.indexOf(v); if (i >= 0) run.srcs.splice(i, 1); };
+}
+
+// Narra a mensagem inteira: voz do TTS + SFX nos pontos exatos do texto
+async function narrate(el) {
+    const ac = audio();
+    if (!ac) return;
+    stopAll();
+    const s = SX();
+    const items = buildTimeline(el, clamp(Number(s.ttsMaxChars) || 200, 60, 400));
+    if (!items.length) return;
+
+    const run = newRun();
+    RUN = run;
+    playingEl = el;
+    updatePlayButtons();
+
+    const mes = el.closest('.mes');
+    const char = (mes && mes.getAttribute('ch_name')) || ctx().name2 || '';
+    const ref = pickRef(char);
+    if (!ref && !warnedNoRef) {
+        warnedNoRef = true;
+        toastr.info('Nenhuma voz de referência importada — enviando só o texto. Importe a voz do personagem em "Meus áudios".', '🎙️ TTS externo', { timeOut: 7000 });
+    }
+
+    // Pré-busca dos trechos de voz (2 por vez), na ordem
+    const limit = makeLimiter(2);
+    for (const it of items) {
+        if (it.kind !== 'tts') continue;
+        it.p = limit(async () => {
+            try {
+                return await requestTts(it.text, ref, run);
+            } catch (e) {
+                if (!run.dead && e.message !== 'skip' && e.message !== 'cancelado') {
+                    if (e.fatal) {
+                        run.failed = true;
+                        run.ctrls.forEach(c => { try { c.abort('stop'); } catch (x) { /* ok */ } });
+                    }
+                    reportTtsError(e, run);
+                }
+                throw e;
+            }
+        });
+        it.p.catch(() => {});
+    }
+
+    let cursor = ac.currentTime + 0.15;
+    for (const it of items) {
+        if (run.dead) return;
+        if (it.kind === 'tts') {
+            let buf;
+            try { buf = await it.p; } catch (e) { if (run.dead) return; continue; }
+            if (run.dead) return;
+            const at = Math.max(cursor, ac.currentTime + 0.05);
+            scheduleBuf(run, buf, at);
+            cursor = at + buf.duration + 0.05;
+        } else {
+            const sp = it.span;
+            if (!sp.isConnected) continue;
+            const I = spanIntensity(sp);
+            const at = Math.max(cursor, ac.currentTime + 0.03);
+            const wait = Math.max(0, at - ac.currentTime);
+            const d = playSfx(sp.dataset.sfx, sp.dataset.text || sp.textContent, I, wait, { noVoice: true, char });
+            const tm = setTimeout(() => { TIMERS.delete(tm); popFx(sp); }, wait * 1000);
+            TIMERS.add(tm);
+            cursor = at + d * 0.9 + lerp(0.3, 0.08, I);   // a narração retoma quando o efeito está quase no fim
+        }
+    }
+    if (run.dead) return;
+    const done = setTimeout(() => {
+        TIMERS.delete(done);
+        if (RUN === run) { RUN = null; playingEl = null; updatePlayButtons(); }
+    }, Math.max(0, cursor - ac.currentTime) * 1000 + 300);
+    TIMERS.add(done);
+}
+
+// Botão "Testar conexão e voz" do painel
+export async function testTts(charName = '') {
+    if (!ttsReady()) {
+        toastr.warning('Ative o TTS e preencha uma URL começando com http:// ou https://', '🎙️ TTS externo', { timeOut: 5000 });
+        return;
+    }
+    const ac = audio();
+    if (!ac) return;
+    stopAll();
+    const run = newRun();
+    RUN = run;
+    const ref = pickRef(charName);
+    toastr.info('Enviando texto de teste…', '🎙️ TTS externo', { timeOut: 2500 });
+    const t0 = performance.now();
+    try {
+        const buf = await requestTts('Olá! Esta é uma voz de teste, narrando em português do Brasil.', ref, run);
+        if (run.dead) return;
+        scheduleBuf(run, buf, ac.currentTime + 0.05);
+        toastr.success(`Servidor respondeu em ${((performance.now() - t0) / 1000).toFixed(1)}s ✅${ref ? '' : ' (sem áudio de referência)'}`, '🎙️ TTS externo', { timeOut: 5000 });
+    } catch (e) {
+        if (!run.dead) reportTtsError(e);
+        if (RUN === run) RUN = null;
+    }
+}
+
+// Toca a mensagem: narração + SFX (se o TTS estiver ligado) ou só os SFX
+export function playMessage(el) {
+    if (!el) return;
+    if (ttsReady()) {
+        narrate(el).catch(e => { console.error('[SmutForge TTS]', e); reportTtsError(e); });
+    } else {
+        playAll(el);
+    }
+}
+
+export function refreshTtsUi(reprocess) {
+    applyVolumes();
+    updatePlayButtons();
+    if (reprocess) reprocessAll(false);
 }
 
 // ---------- Visual: transforma onomatopeias do chat em botões estilizados ----------
@@ -649,9 +1020,16 @@ function refreshAvailability() {
     document.querySelectorAll('.sf-sfx').forEach(markAvailability);
 }
 
+const playLabel = () => (ttsReady() ? '🎙️ Narrar com TTS + sons' : '🔊 Tocar os sons desta mensagem');
+function isCharMes(el) {
+    const m = el.closest('.mes');
+    return !!m && m.getAttribute('is_user') !== 'true' && m.getAttribute('is_system') !== 'true';
+}
+
 export function processMes(el) {
     if (!el || !el.isConnected || el.querySelector('textarea')) return;
     const s = SX();
+    const wantTts = ttsReady() && isCharMes(el);
     const re = s.autodetect ? RE_ALL : RE_MARK;
     const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
         acceptNode: (n) => (n.parentElement && n.parentElement.closest(SKIP)) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
@@ -661,7 +1039,7 @@ export function processMes(el) {
     for (const node of nodes) wrapNode(node, re);
 
     const spans = el.querySelectorAll('.sf-sfx');
-    if (!spans.length) return;
+    if (!spans.length && !wantTts) return;
     spans.forEach(sp => {
         if (sp.dataset.lv === undefined) tagSpan(sp);
         markAvailability(sp);
@@ -672,10 +1050,10 @@ export function processMes(el) {
         clone.querySelectorAll('.sf-sfx').forEach(x => x.remove());
         if (!/[\p{L}\p{N}]/u.test(clone.textContent)) p.classList.add('sf-sfx-line');
     });
-    if (spans.length >= 2 && s.sound && !el.querySelector('.sf-playall')) {
+    if (((spans.length >= 2 && s.sound) || wantTts) && !el.querySelector('.sf-playall')) {
         const b = document.createElement('div');
         b.className = 'sf-playall';
-        b.textContent = '🔊 Tocar os sons desta mensagem';
+        b.textContent = playLabel();
         el.appendChild(b);
     }
 }
@@ -697,50 +1075,31 @@ function popFx(sp) {
 function updatePlayButtons() {
     document.querySelectorAll('.sf-playall').forEach(b => {
         const on = !!playingEl && b.closest('.mes_text') === playingEl;
-        const label = on ? '⏹️ Parar' : '🔊 Tocar os sons desta mensagem';
+        const label = on ? '⏹️ Parar' : playLabel();
         if (b.textContent !== label) b.textContent = label;
         b.classList.toggle('sf-playing', on);
     });
 }
 
-// Posição (0 a 1) de uma onomatopeia dentro do texto da mensagem
-function fracOf(el, sp, total) {
-    try {
-        const r = document.createRange();
-        r.setStart(el, 0);
-        r.setEndBefore(sp);
-        return clamp(r.toString().length / total, 0, 1);
-    } catch (e) {
-        return 0;
-    }
-}
-
-// Toca a mensagem inteira como uma "trilha sonora".
-// Se houver voz importada: a voz toca e os efeitos entram ao mesmo tempo, na posição de cada onomatopeia.
+// Toca a mensagem inteira como uma "trilha sonora": pausas curtas nas partes intensas, longas nas suaves
 export function playAll(el) {
     if (!el) return;
     stopAll();
     const spans = Array.from(el.querySelectorAll('.sf-sfx')).slice(0, 30);
-    const mes = el.closest('.mes');
-    const charName = mes ? (mes.getAttribute('ch_name') || '') : '';
-    const pa = el.querySelector('.sf-playall');
-    const total = Math.max(1, el.textContent.length - (pa ? pa.textContent.length : 0));
-    const vdur = startVoice(charName, total);
-    if (!spans.length && !vdur) return;
+    if (!spans.length) return;
     playingEl = el;
     updatePlayButtons();
     let delay = 0;
     for (const sp of spans) {
         const I = spanIntensity(sp);
-        const myDelay = vdur ? Math.max(delay, fracOf(el, sp, total) * vdur) : delay;
+        const myDelay = delay;
         const d = playSfx(sp.dataset.sfx, sp.dataset.text || sp.textContent, I, myDelay);
         const tm = setTimeout(() => { TIMERS.delete(tm); popFx(sp); }, myDelay * 1000);
         TIMERS.add(tm);
-        delay = vdur ? myDelay + d * 0.6 : myDelay + d + lerp(0.55, 0.12, I) * rnd(0.8, 1.2);
-        if (delay > Math.max(25, vdur + 5)) break;
+        delay += d + lerp(0.55, 0.12, I) * rnd(0.8, 1.2);
+        if (delay > 25) break;
     }
-    const endAt = Math.max(delay, vdur);
-    const done = setTimeout(() => { TIMERS.delete(done); playingEl = null; updatePlayButtons(); }, endAt * 1000 + 300);
+    const done = setTimeout(() => { TIMERS.delete(done); playingEl = null; updatePlayButtons(); }, delay * 1000 + 300);
     TIMERS.add(done);
 }
 
@@ -803,19 +1162,19 @@ function renderStatus() {
     const $st = $('#sfx_status');
     if ($st.length) {
         let html = '';
-        if (loadState === 'none' && !hasLib()) html = '📭 Nenhum <code>sounds/sounds.json</code> encontrado — ainda sem sons reais.';
+        const hasUser = Object.values(USERLIB).some(l => l.length);
+        if (loadState === 'none' && !hasUser) html = '📭 Nenhum <code>sounds/sounds.json</code> encontrado — ainda sem sons reais.';
         else if (loadState === 'error') html = '❌ Erro de digitação no sounds.json: ' + esc(loadInfo.jsonError || '');
         else if (loadState === 'fetching' || loadState === 'decoding' || loadState === 'idle') html = '⏳ Carregando sons…';
         else if (loadState === 'fetched') html = '👆 Sons baixados — clique em qualquer lugar da página para ativar o áudio.';
         else {
             const rows = Object.keys(LABELS).map(k => {
-                const l = LIB[k] || [];
+                const l = libOf(k);
                 if (!l.length) return '';
                 const c = (lv) => l.filter(x => x.level === lv).length;
                 return `<div>${esc(LABELS[k])}: <b>${l.length}</b> <small>(🌙${c('soft')} ⚖️${c('med')} 🔥${c('hard')})</small></div>`;
             }).join('');
             html = rows ? `<div class="sfx-status-grid">${rows}</div>` : '📭 O sounds.json está vazio ou nenhum arquivo foi encontrado.';
-            if (VOICE_LIB.length) html += `<div>🎤 Vozes importadas: <b>${VOICE_LIB.length}</b></div>`;
             if (loadInfo.missing.length) html += `<div class="sfx-warn">⚠️ Não encontrados: ${loadInfo.missing.map(esc).join(', ')}</div>`;
             if (loadInfo.broken.length) html += `<div class="sfx-warn">⚠️ Ilegíveis: ${loadInfo.broken.map(esc).join(', ')}</div>`;
         }
@@ -883,6 +1242,7 @@ function settingsHtml() {
           <label class="checkbox_label"><input type="checkbox" id="sfx_autodetect"><span>Detectar onomatopeias mesmo sem [[colchetes]]</span></label>
           <label class="checkbox_label"><input type="checkbox" id="sfx_sound"><span>Sons ao clicar</span></label>
           <label class="checkbox_label"><input type="checkbox" id="sfx_autoplay"><span>Tocar sozinho quando a resposta chegar</span></label>
+          <small>🎙️ A narração por TTS externo (URL da API) fica no painel "Meus áudios".</small>
         </div>
       </div>
     </div>`;
@@ -952,6 +1312,16 @@ function registerSlash() {
         callback: () => { fetchSounds(true); return ''; },
         helpString: 'Recarrega os sons da pasta sounds/.',
     }));
+    P.addCommandObject(Cmd.fromProps({
+        name: 'sfx-narrate',
+        callback: () => {
+            const els = document.querySelectorAll('#chat .mes:not([is_user="true"]) .mes_text');
+            const el = els[els.length - 1];
+            if (el) { processMes(el); playMessage(el); }
+            return '';
+        },
+        helpString: 'Narra a última resposta (TTS externo, se ligado) junto com os efeitos sonoros.',
+    }));
 }
 
 // ---------- Inicialização ----------
@@ -961,7 +1331,7 @@ function fireAutoplay(id) {
     const el = document.querySelector(`#chat .mes[mesid="${id}"] .mes_text`);
     if (!el) return;
     processMes(el);
-    playAll(el);
+    playMessage(el);
 }
 
 function init() {
@@ -1015,7 +1385,7 @@ function init() {
     $(document).on('click', '.sf-playall', function (e) {
         e.stopPropagation();
         const el = this.closest('.mes_text');
-        if (playingEl && playingEl === el) stopAll(); else playAll(el);
+        if (playingEl && playingEl === el) stopAll(); else playMessage(el);
     });
 
     // O navegador só libera áudio depois do primeiro clique/tecla
@@ -1030,7 +1400,8 @@ function init() {
     const c = ctx();
     const ev = c.eventSource, et = c.eventTypes || c.event_types;
     ev.on(et.MESSAGE_RECEIVED, (id, type) => {
-        if (!SX().autoplay || !SX().sound || type === 'quiet' || type === 'first_message') return;
+        const s = SX();
+        if (!s.autoplay || !(s.sound || ttsReady()) || type === 'quiet' || type === 'first_message') return;
         autoplayId = Number(id);
         setTimeout(() => { if (autoplayId === Number(id)) fireAutoplay(id); }, 1500);
     });
@@ -1045,7 +1416,7 @@ function init() {
     startObserver();
     reprocessAll(false);
     fetchSounds(false);
-    console.log('[SmutForge SFX] v2 carregado 🔊');
+    console.log('[SmutForge SFX] v2 + TTS externo carregado 🔊');
 }
 
 jQuery(() => {
