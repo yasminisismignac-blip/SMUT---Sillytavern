@@ -1,3 +1,4 @@
+import { sfxDirective } from './sfx.js';
 import { CATEGORIES, PHASES, INTENSITY, DEFAULT_BANNED, DEFAULT_KEYWORDS, DEFAULT_LIMITS } from './data.js';
 
 const MODULE = 'smut_forge';
@@ -78,6 +79,7 @@ function buildBase() {
     if (s.favorites.trim()) lines.push(`- {{user}} enjoys (weave in when it fits naturally): ${s.favorites.trim()}`);
     if (s.banned.trim()) lines.push(`- BANNED clichés/euphemisms — never use: ${s.banned.trim()}`);
     lines.push(`- HARD LIMITS (absolute, override everything): no minors or childlike framing; no non-sapient animals${s.limits.trim() ? `; ${s.limits.trim()}` : ''}.`);
+    const sfxLine = sfxDirective(); if (sfxLine) lines.push(sfxLine);
     return lines.join('\n');
 }
 
@@ -357,50 +359,55 @@ globalThis.smutForgeInterceptor = async function (chat, contextSize, abort, type
 
 // ---------- Init ----------
 jQuery(async () => {
-    $('#extensions_settings2').append(settingsHtml());
-    bindSetting('sf_enabled', 'enabled');
-    bindSetting('sf_mode', 'mode');
-    bindSetting('sf_intensity', 'intensity', Number);
-    bindSetting('sf_language', 'language');
-    bindSetting('sf_baseDepth', 'baseDepth', Number);
-    bindSetting('sf_cardDepth', 'cardDepth', Number);
-    bindSetting('sf_scanDepth', 'scanDepth', Number);
-    bindSetting('sf_autoRollEvery', 'autoRollEvery', Number);
-    bindSetting('sf_favorites', 'favorites');
-    bindSetting('sf_limits', 'limits');
-    bindSetting('sf_banned', 'banned');
-    bindSetting('sf_keywords', 'keywords');
-    $('#sf_preview').on('click', showPreview);
+    try {
+        $('#extensions_settings2').append(settingsHtml());
+        bindSetting('sf_enabled', 'enabled');
+        bindSetting('sf_mode', 'mode');
+        bindSetting('sf_intensity', 'intensity', Number);
+        bindSetting('sf_language', 'language');
+        bindSetting('sf_baseDepth', 'baseDepth', Number);
+        bindSetting('sf_cardDepth', 'cardDepth', Number);
+        bindSetting('sf_scanDepth', 'scanDepth', Number);
+        bindSetting('sf_autoRollEvery', 'autoRollEvery', Number);
+        bindSetting('sf_favorites', 'favorites');
+        bindSetting('sf_limits', 'limits');
+        bindSetting('sf_banned', 'banned');
+        bindSetting('sf_keywords', 'keywords');
+        $('#sf_preview').on('click', showPreview);
 
-    // Item no menu da varinha mágica (🪄)
-    $('#extensionsMenu').append(`
-      <div id="sf_wand" class="list-group-item flex-container flexGap5 interactable" tabindex="0">
-        <div class="fa-solid fa-fire extensionsMenuExtensionButton"></div>
-        <span>Smut Forge</span>
-      </div>`);
-    $('#sf_wand').on('click', openPanelPopup);
+        // Item no menu da varinha mágica (🪄)
+        $('#extensionsMenu').append(`
+          <div id="sf_wand" class="list-group-item flex-container flexGap5 interactable" tabindex="0">
+            <div class="fa-solid fa-fire extensionsMenuExtensionButton"></div>
+            <span>Smut Forge</span>
+          </div>`);
+        $('#sf_wand').on('click', openPanelPopup);
 
-    bindGlobalHandlers();
-    registerCommands();
+        bindGlobalHandlers();
+        registerCommands();
 
-    const { eventSource, eventTypes } = ctx();
-    eventSource.on(eventTypes.MESSAGE_SENT, () => { if (consumed) clearCards(); refreshBase(); });
-    eventSource.on(eventTypes.MESSAGE_RECEIVED, (_id, type) => {
-        refreshBase();
-        const s = S();
-        if (!s.enabled || !s.autoRollEvery || type === 'quiet' || !isHot()) return;
-        if (++aiCounter % s.autoRollEvery === 0) {
-            pending = []; consumed = false;
-            addPending(draw(randomCat()));
-        }
-    });
-    eventSource.on(eventTypes.CHAT_CHANGED, () => {
-        S().sceneActive = false; save();
-        aiCounter = 0;
-        clearCards();
+        const { eventSource, eventTypes } = ctx();
+        eventSource.on(eventTypes.MESSAGE_SENT, () => { if (consumed) clearCards(); refreshBase(); });
+        eventSource.on(eventTypes.MESSAGE_RECEIVED, (_id, type) => {
+            refreshBase();
+            const s = S();
+            if (!s.enabled || !s.autoRollEvery || type === 'quiet' || !isHot()) return;
+            if (++aiCounter % s.autoRollEvery === 0) {
+                pending = []; consumed = false;
+                addPending(draw(randomCat()));
+            }
+        });
+        eventSource.on(eventTypes.CHAT_CHANGED, () => {
+            S().sceneActive = false; save();
+            aiCounter = 0;
+            clearCards();
+            syncPanel();
+        });
+
         syncPanel();
-    });
-
-    syncPanel();
-    console.log('[SmutForge] carregada 🔥');
+        console.log('[SmutForge] carregada 🔥');
+    } catch (e) {
+        console.error('[SmutForge] erro ao iniciar', e);
+        toastr.error('Smut Forge: ' + (e?.message ?? e), 'Erro ao carregar', { timeOut: 0, extendedTimeOut: 0 });
+    }
 });
