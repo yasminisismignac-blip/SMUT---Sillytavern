@@ -10,7 +10,7 @@ const DEFAULTS = Object.freeze({
     visual: true,
     anim: true,
     sound: true,
-    autoplay: false,
+    autoplay: true,
     autodetect: true,
     prompt: true,
     density: 'med',
@@ -23,9 +23,11 @@ const DEFAULTS = Object.freeze({
     stereo: 50,
     room: 15,
     testLevel: 'auto',
+    voice: true,
+    voiceVol: 100,
 });
 
-function SX() {
+export function SX() {
     const es = ctx().extensionSettings;
     if (!es[MODULE]) es[MODULE] = Object.assign({}, DEFAULTS);
     for (const k of Object.keys(DEFAULTS)) {
@@ -195,7 +197,7 @@ async function fetchSounds(force) {
     loadState = 'fetching';
     renderStatus();
     RAW = [];
-    for (const k of Object.keys(LIB)) delete LIB[k];
+    for (const k of Object.keys(LIB)) LIB[k] = LIB[k].filter(x => x.user);
     loadInfo = { missing: [], broken: [], unknown: [], jsonError: null };
     warned.clear();
     let map;
@@ -264,6 +266,7 @@ async function decodeAll() {
     }
     RAW = [];
     for (const list of Object.values(LIB)) list.sort((a, b) => a.dur - b.dur);
+    await decodeUser();
     loadState = 'ready';
     renderStatus();
     const total = Object.values(LIB).reduce((n, l) => n + l.length, 0);
@@ -282,7 +285,7 @@ const VOCAL = ['moan', 'breath', 'growl'];
 const FALLBACK = { crack: ['impact'], suck: ['wet'], throat: ['suck', 'wet'], kiss: ['suck', 'wet'], generic: ['impact', 'wet'] };
 const MAX_DUR = { impact: 1.5, crack: 1.5, kiss: 1.2, wet: 2, suck: 2.5, throat: 2, bed: 2.5, cloth: 2.5, generic: 1.5 };
 
-function audio() {
+export function audio() {
     if (!AC) {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
         if (!AudioCtx) return null;
@@ -301,6 +304,7 @@ function audio() {
         SEND.connect(conv);
         conv.connect(MASTER);
         if (loadState === 'fetched') decodeAll();
+        decodeUser();
     }
     applyVolumes();
     if (AC.state === 'suspended') AC.resume();
@@ -415,12 +419,102 @@ function playSample(smp, t, I, type) {
     return realDur;
 }
 
+// ---------- Áudios importados pelo usuário (painel "Meus áudios") ----------
+let USER = [];                 // [{ id, kind: 'sfx'|'voice', type, level, name, blob, char }]
+const VOICE_LIB = [];          // [{ buf, dur, name, char }]
+const DECODED = new Map();     // id -> AudioBuffer (evita decodificar de novo)
+let VOICE_NOW = null, lastVoice = null;
+let userBusy = false, userAgain = false;
+const hasLib = () => Object.values(LIB).some(l => l.length);
+
+export function setUserSounds(items) {
+    USER = Array.isArray(items) ? items : [];
+    decodeUser();
+}
+
+async function decodeUser() {
+    if (!AC) return;
+    if (userBusy) { userAgain = true; return; }
+    userBusy = true;
+    try {
+        do {
+            userAgain = false;
+            const sfx = [], voices = [];
+            for (const it of USER.slice()) {
+                try {
+                    let buf = DECODED.get(it.id);
+                    if (!buf) {
+                        buf = await AC.decodeAudioData(await it.blob.arrayBuffer());
+                        DECODED.set(it.id, buf);
+                    }
+                    if (it.kind === 'voice') {
+                        voices.push({ buf, dur: buf.duration, name: it.name, char: it.char || '' });
+                    } else {
+                        const { offset, dur } = trimInfo(buf);
+                        sfx.push({ type: it.type || 'generic', level: it.level || 'med', buf, offset, dur, name: it.name, user: true });
+                    }
+                } catch (e) {
+                    console.warn('[SmutForge SFX] não consegui ler o áudio importado', it.name, e);
+                }
+            }
+            for (const k of Object.keys(LIB)) LIB[k] = LIB[k].filter(x => !x.user);
+            for (const x of sfx) (LIB[x.type] = LIB[x.type] || []).push(x);
+            for (const list of Object.values(LIB)) list.sort((a, b) => a.dur - b.dur);
+            VOICE_LIB.splice(0, VOICE_LIB.length, ...voices);
+        } while (userAgain);
+    } finally {
+        userBusy = false;
+    }
+    renderStatus();
+}
+
+// Escolhe uma voz importada (do personagem, se tiver) com duração parecida com a do texto
+function startVoice(charName, textLen, delay = 0) {
+    const s = SX();
+    if (!s.voice || !VOICE_LIB.length) return 0;
+    const ac = audio();
+    if (!ac) return 0;
+    const est = clamp(textLen * 0.06, 2, 40);
+    const wanted = String(charName || '').toLowerCase();
+    let pool = VOICE_LIB.filter(v => v.char && wanted && v.char.toLowerCase() === wanted);
+    if (!pool.length) pool = VOICE_LIB;
+    pool = pool.slice().sort((a, b) => Math.abs(a.dur - est) - Math.abs(b.dur - est)).slice(0, 3);
+    let v = pool[Math.floor(Math.random() * pool.length)];
+    if (pool.length > 1 && v === lastVoice) v = pool.find(x => x !== lastVoice) || v;
+    lastVoice = v;
+    const src = ac.createBufferSource();
+    src.buffer = v.buf;
+    const g = ac.createGain();
+    g.gain.value = clamp(Number(s.voiceVol) / 100, 0, 2);
+    src.connect(g);
+    g.connect(MASTER);
+    src.start(ac.currentTime + 0.02 + delay);
+    const node = { src, g };
+    VOICE_NOW = node;
+    src.onended = () => { if (VOICE_NOW === node) VOICE_NOW = null; };
+    return v.dur;
+}
+
+// Botão "Testar mixagem": voz + efeitos tocando juntos
+export function testMix(charName = '') {
+    stopAll();
+    const ac = audio();
+    if (!ac) return;
+    if (!VOICE_LIB.length && !hasLib()) {
+        toastr.info('Importe ao menos um áudio primeiro 🎧', '🔊 Smut Forge', { timeOut: 4000 });
+        return;
+    }
+    const vdur = startVoice(charName, 160) || 6;
+    const seq = [['wet', 'shlick', 0.12], ['impact', 'plap…', 0.3], ['moan', 'aahn~', 0.45], ['impact', 'PLAP! PLAP! PLAP!', 0.65], ['moan', 'AAAHN!', 0.85]];
+    for (const [type, text, f] of seq) playSfx(type, text, intensityOf(text), f * vdur);
+}
+
 function noSoundWarn(type) {
     if (['idle', 'fetching', 'fetched', 'decoding'].includes(loadState)) {
         toastr.info('Os sons ainda estão carregando… tenta de novo em um segundinho 🎧', '🔊 Smut Forge', { timeOut: 2500 });
         return;
     }
-    const key = (loadState === 'none' || loadState === 'error') ? '__none' : type;
+    const key = ((loadState === 'none' || loadState === 'error') && !hasLib()) ? '__none' : type;
     if (warned.has(key)) return;
     warned.add(key);
     const msg = key === '__none'
@@ -464,6 +558,7 @@ export function stopAll() {
     TIMERS.forEach(clearTimeout);
     TIMERS.clear();
     if (AC) VOICES.splice(0).forEach(fadeVoice);
+    if (AC && VOICE_NOW) { fadeVoice(VOICE_NOW); VOICE_NOW = null; }
     playingEl = null;
     updatePlayButtons();
 }
@@ -608,25 +703,44 @@ function updatePlayButtons() {
     });
 }
 
-// Toca a mensagem inteira como uma "trilha sonora": pausas curtas nas partes intensas, longas nas suaves
+// Posição (0 a 1) de uma onomatopeia dentro do texto da mensagem
+function fracOf(el, sp, total) {
+    try {
+        const r = document.createRange();
+        r.setStart(el, 0);
+        r.setEndBefore(sp);
+        return clamp(r.toString().length / total, 0, 1);
+    } catch (e) {
+        return 0;
+    }
+}
+
+// Toca a mensagem inteira como uma "trilha sonora".
+// Se houver voz importada: a voz toca e os efeitos entram ao mesmo tempo, na posição de cada onomatopeia.
 export function playAll(el) {
     if (!el) return;
     stopAll();
     const spans = Array.from(el.querySelectorAll('.sf-sfx')).slice(0, 30);
-    if (!spans.length) return;
+    const mes = el.closest('.mes');
+    const charName = mes ? (mes.getAttribute('ch_name') || '') : '';
+    const pa = el.querySelector('.sf-playall');
+    const total = Math.max(1, el.textContent.length - (pa ? pa.textContent.length : 0));
+    const vdur = startVoice(charName, total);
+    if (!spans.length && !vdur) return;
     playingEl = el;
     updatePlayButtons();
     let delay = 0;
     for (const sp of spans) {
         const I = spanIntensity(sp);
-        const myDelay = delay;
+        const myDelay = vdur ? Math.max(delay, fracOf(el, sp, total) * vdur) : delay;
         const d = playSfx(sp.dataset.sfx, sp.dataset.text || sp.textContent, I, myDelay);
         const tm = setTimeout(() => { TIMERS.delete(tm); popFx(sp); }, myDelay * 1000);
         TIMERS.add(tm);
-        delay += d + lerp(0.55, 0.12, I) * rnd(0.8, 1.2);
-        if (delay > 25) break;
+        delay = vdur ? myDelay + d * 0.6 : myDelay + d + lerp(0.55, 0.12, I) * rnd(0.8, 1.2);
+        if (delay > Math.max(25, vdur + 5)) break;
     }
-    const done = setTimeout(() => { TIMERS.delete(done); playingEl = null; updatePlayButtons(); }, delay * 1000 + 300);
+    const endAt = Math.max(delay, vdur);
+    const done = setTimeout(() => { TIMERS.delete(done); playingEl = null; updatePlayButtons(); }, endAt * 1000 + 300);
     TIMERS.add(done);
 }
 
@@ -689,7 +803,7 @@ function renderStatus() {
     const $st = $('#sfx_status');
     if ($st.length) {
         let html = '';
-        if (loadState === 'none') html = '📭 Nenhum <code>sounds/sounds.json</code> encontrado — ainda sem sons reais.';
+        if (loadState === 'none' && !hasLib()) html = '📭 Nenhum <code>sounds/sounds.json</code> encontrado — ainda sem sons reais.';
         else if (loadState === 'error') html = '❌ Erro de digitação no sounds.json: ' + esc(loadInfo.jsonError || '');
         else if (loadState === 'fetching' || loadState === 'decoding' || loadState === 'idle') html = '⏳ Carregando sons…';
         else if (loadState === 'fetched') html = '👆 Sons baixados — clique em qualquer lugar da página para ativar o áudio.';
@@ -701,6 +815,7 @@ function renderStatus() {
                 return `<div>${esc(LABELS[k])}: <b>${l.length}</b> <small>(🌙${c('soft')} ⚖️${c('med')} 🔥${c('hard')})</small></div>`;
             }).join('');
             html = rows ? `<div class="sfx-status-grid">${rows}</div>` : '📭 O sounds.json está vazio ou nenhum arquivo foi encontrado.';
+            if (VOICE_LIB.length) html += `<div>🎤 Vozes importadas: <b>${VOICE_LIB.length}</b></div>`;
             if (loadInfo.missing.length) html += `<div class="sfx-warn">⚠️ Não encontrados: ${loadInfo.missing.map(esc).join(', ')}</div>`;
             if (loadInfo.broken.length) html += `<div class="sfx-warn">⚠️ Ilegíveis: ${loadInfo.broken.map(esc).join(', ')}</div>`;
         }
