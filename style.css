@@ -1,0 +1,12 @@
+.sf-panel { display: flex; flex-direction: column; gap: 6px; }
+.sf-statusbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.sf-status { font-weight: bold; opacity: .8; }
+.sf-status.sf-hot { color: #ff5e7e; opacity: 1; }
+.sf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 4px; }
+.sf-grid .menu_button { margin: 0; text-align: center; white-space: normal; }
+.sf-pending { font-size: .9em; border-left: 3px solid #ff5e7e; padding-left: 8px; }
+.sf-pending ul { margin: 4px 0; padding-left: 18px; }
+.sf-row { display: flex; gap: 8px; }
+.sf-row > div { flex: 1; }
+.sf-pre { white-space: pre-wrap; text-align: left; font-size: .85em; }
+.sf-ideas-out { text-align: left; }
