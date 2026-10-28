@@ -10,3 +10,17 @@
 .sf-row > div { flex: 1; }
 .sf-pre { white-space: pre-wrap; text-align: left; font-size: .85em; }
 .sf-ideas-out { text-align: left; }
+
+/* ===== Meus áudios (userAudio.js) ===== */
+#smutforge_audio_settings .sfa-title { font-weight: bold; margin: 10px 0 4px; }
+#smutforge_audio_settings .sfa-big { width: 100%; text-align: center; padding: 10px; margin: 0 0 6px; }
+#smutforge_audio_settings .sfa-list { max-height: 180px; overflow-y: auto; font-size: .85em; border: 1px solid var(--SmartThemeBorderColor, #555); border-radius: 6px; padding: 4px; }
+#smutforge_audio_settings .sfa-item { display: flex; align-items: center; gap: 6px; padding: 2px 4px; }
+#smutforge_audio_settings .sfa-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#smutforge_audio_settings .sfa-meta { opacity: .75; white-space: nowrap; }
+#smutforge_audio_settings .sfa-type { width: auto; max-width: 110px; padding: 2px; margin: 0; }
+#smutforge_audio_settings .sfa-del { cursor: pointer; opacity: .7; padding: 0 6px; }
+#smutforge_audio_settings .sfa-del:hover { opacity: 1; }
+#smutforge_audio_settings .sfa-empty { opacity: .6; padding: 4px; }
+#smutforge_audio_settings .sfa-btns { display: flex; gap: 6px; margin-top: 8px; }
+#smutforge_audio_settings .sfa-btns .menu_button { flex: 1; margin: 0; text-align: center; }
