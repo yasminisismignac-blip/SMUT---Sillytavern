@@ -1,0 +1,13 @@
+{
+    "display_name": "Smut Forge 🔥",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "SEU_NOME",
+    "version": "1.0.0",
+    "homePage": "https://github.com/SEU_USUARIO/SillyTavern-SmutForge",
+    "auto_update": true,
+    "generate_interceptor": "smutForgeInterceptor"
+}
