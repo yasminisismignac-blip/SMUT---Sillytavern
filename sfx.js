@@ -1,9 +1,10 @@
-// sfx.js — Smut Forge 🔊 Onomatopeias visuais + sons clicáveis
+// sfx.js — Smut Forge 🔊 v2 — sons REAIS + áudio dinâmico sensível ao contexto
 import { CATEGORIES } from './data.js';
 
 const MODULE = 'smut_forge_sfx';
 const ctx = () => SillyTavern.getContext();
 const BASE_URL = new URL('./', import.meta.url);
+const SOUNDS_URL = new URL('sounds/', BASE_URL);
 
 const DEFAULTS = Object.freeze({
     visual: true,
@@ -13,10 +14,15 @@ const DEFAULTS = Object.freeze({
     autodetect: true,
     prompt: true,
     density: 'med',
-    voice: 'aguda',
-    volume: 70,
-    stereo: 60,
-    room: 25,
+    dynamic: true,
+    volume: 80,
+    volMin: 70,
+    volMax: 100,
+    rateMin: 0.9,
+    rateMax: 1.15,
+    stereo: 50,
+    room: 15,
+    testLevel: 'auto',
 });
 
 function SX() {
@@ -27,6 +33,11 @@ function SX() {
     }
     return es[MODULE];
 }
+
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const rnd = (a, b) => a + Math.random() * (b - a);
+const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // ---------- Dicionário de onomatopeias (a ordem importa) ----------
 export const TYPES = {
@@ -44,6 +55,7 @@ export const TYPES = {
     breath: { label: 'Ofego', sample: 'haah', re: /^(?:h+a{2,}h*|h+a+h{2,}|h+f{2,}|h+u+f+|h{3,}|p+a+n+t+|f+w+h+)$/ },
     moan:   { label: 'Gemido', sample: 'aahn~', re: /^(?:a+h+n*|a{2,}n*h*|o+h+|o{2,}h*|m{2,}h*|m+h+|n+g+h+|n{2,}g*h*|h+n+g*h*|u+h*n+h*|h+y+a+|h+a+n+|n+h+a+|a+i+|u+i{2,}|i+y+a+)$/ },
 };
+const LABELS = Object.assign({ generic: 'Outros' }, Object.fromEntries(Object.entries(TYPES).map(([k, t]) => [k, t.label])));
 
 const normTok = (raw) => String(raw).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z]/g, '');
 const tokensOf = (text) => String(text).split(/[\s,.;:!?…]+/).filter(x => /\p{L}/u.test(x));
@@ -72,27 +84,203 @@ export function sfxDirective() {
     }[s.density] || 'frequently';
     return '- SOUND EFFECTS: use dirty, graphic onomatopoeia ' + dens + ' — wet sounds, skin slapping, sucking, kisses, gulping, bed creaking, heartbeat, panting, growls, toy buzzing, fabric ripping, and stretched-out moans. ' +
         'Wrap EVERY onomatopoeia in double square brackets, with no other formatting inside them: [[PLAP]] [[shlick]] [[slurrp]] [[nhec nhec]] [[glk]] [[haah]] [[aahn~]] [[tu-dum]] [[bzzzz]] [[rrrip]]. ' +
-        'Stretch letters for length and intensity, CAPS for loud hits, ~ or ♡ for needy moans. Sometimes put a burst alone on its own line, e.g. [[PLAP]] [[PLAP]] [[PLAP]]. ' +
-        'Moans and broken sounds inside dialogue can be wrapped too. When narrating in Portuguese, mix Brazilian onomatopoeia (nhec, chlap, plaft, ploc, tum-tum) with universal ones. Never explain the brackets.';
+        'Make the intensity of every sound readable: soft/slow sounds in lowercase, often trailing off with "…", next to words like slowly, gently, softly (devagar, suave, baixinho); hard/fast hits in CAPS with "!" next to words like hard, fast, deep, rough (forte, rápido, fundo, bruto). ' +
+        'Stretch letters for longer sounds (aaahn~, shliiick). Repeat a sound 2-5 times to show rhythm, sometimes as a burst alone on its own line, e.g. [[PLAP!]] [[PLAP!]] [[PLAP!]]. ' +
+        'When narrating in Portuguese, mix Brazilian onomatopoeia (nhec, chlap, plaft, ploc, tum-tum) with universal ones. Never explain the brackets.';
 }
 
 // Carta extra no baralho do Smut Forge
 CATEGORIES.sons = { emoji: '🔊', label: 'Sons', items: [
     'Sound barrage: fill this reply with graphic onomatopoeia — at least 8, each wrapped in [[ ]], with one burst stacked alone on its own line.',
     'Wet focus: the scene is told through its wet sounds — [[shlick]], [[chlap]], [[squelch]], [[ploc]] — getting louder as it intensifies.',
-    'Rhythm through sound: show the pace with [[PLAP]] bursts that start slow and spaced out, then speed up into a frantic stacked line.',
-    'Moan escalation: {{char}}\'s moans escalate across the reply — [[mmh]] → [[ahh]] → [[aahn~]] → [[AAAHN♡]] — getting longer and less controlled.',
+    'Rhythm through sound: start with soft, spaced-out lowercase [[plap…]] and build into a frantic stacked line of [[PLAP!]] [[PLAP!]] [[PLAP!]].',
+    'Moan escalation: {{char}}\'s moans escalate across the reply — [[mmh…]] → [[ahh]] → [[aahn~]] → [[AAAHN!]] — getting longer and less controlled.',
     'Furniture betrayal: the bed or furniture gives everything away — [[nhec]] [[nhec]] [[creak]] — in rhythm with the bodies.',
-    'ASMR close-up: quiet, intimate, close-mic sounds only — [[haah]] breaths, [[muah]] wet kisses, [[slurrp]], a racing [[tu-dum]] heartbeat.',
+    'ASMR close-up: quiet, intimate, close-mic sounds only — [[haah…]] breaths, [[muah]] wet kisses, [[slurrp]], a racing [[tu-dum]] heartbeat.',
     'Oral soundtrack: throat and mouth sounds in detail — [[glk]] [[gulp]] [[slurrp]] [[gawk]] — sloppy and shameless.',
-    'Toy on: a toy is switched on and its [[bzzzz]] changes in pitch and intensity, driving the reactions.',
+    'Toy on: a toy is switched on and its [[bzzzz]] changes in intensity, driving the reactions.',
 ] };
 
-// ---------- Motor de áudio (Web Audio, sintetizado na hora) ----------
-let AC = null, MASTER = null, SEND = null, NOISE = null, DIST = null;
-const CUSTOM = {};
-const rnd = (a, b) => a + Math.random() * (b - a);
-const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+// ---------- Análise de contexto: quão forte/rápido é esse som? (0 = suave, 1 = selvagem) ----------
+const wordRe = (list) => new RegExp('(?<![\\p{L}])(?:' + list.join('|') + ')', 'giu');
+const HARD_RE = wordRe([
+    'fort[ea]s?(?![\\p{L}])', 'for[cç]a', 'r[aá]pid', 'fundo', 'funda', 'brut', 'violent', 'selvag', 'fren[eé]tic', 'desesper',
+    'sem parar', 'sem d[oó]', 'bate', 'bateu', 'batia', 'soca', 'socou', 'estoc', 'martel', 'arromb', 'feroz', 'insan', 'enlouq',
+    'grit', 'urr', 'implac', 'intens', 'brusc', 'com tudo', 'cada vez mais', 'animal', 'descontrol',
+    'hard', 'fast', 'rough', 'deep', 'pound', 'slam', 'frenz', 'wild', 'desperat', 'savage', 'relentless', 'scream', 'feral', 'brutal',
+]);
+const SOFT_RE = wordRe([
+    'devagar', 'lent[ao]', 'lentamente', 'suav', 'gentil', 'carinh', 'delicad', 'baixinh', 'sussurr', 'murmur',
+    'pregui[cç]', 'calm', 't[ií]mid', 'leve', 'levemente', 'ternur', 'tern[ao]', 'maci', 'doce', 'cuidados', 'hesit', 'contid',
+    'abafad', 'fraquinh', 'demor', 'sem pressa', 'aos poucos',
+    'slow', 'soft', 'gentl', 'tender', 'lazy', 'lazil', 'quiet', 'whisper', 'light', 'careful', 'sweet', 'languid', 'hesitant',
+    'timid', 'faint', 'muffled', 'teas', 'unhurried',
+]);
+const PHASE_BIAS = { tease: -0.15, build: 0.05, frenzy: 0.18, climax: 0.22, aftercare: -0.25 };
+const countRe = (re, s) => (String(s).match(re) || []).length;
+
+export function intensityOf(raw, before = '', after = '') {
+    if (!SX().dynamic) return 0.5;
+    const text = String(raw);
+    let I = 0.45;
+    const letters = text.replace(/[^\p{L}]/gu, '');
+    if (letters.length >= 2 && letters === letters.toUpperCase() && letters !== letters.toLowerCase()) I += 0.22; // CAIXA ALTA
+    if (/(\p{L})\1{2,}/u.test(letters)) I += 0.06;                                   // letras esticadas
+    const tail = (String(after).match(/^[^\s\p{L}]*/u) || [''])[0];
+    const punct = text + tail;
+    I += Math.min((punct.match(/!/g) || []).length, 3) * 0.08;                        // PLAP!!!
+    if (/(\.\.\.|…)/.test(punct)) I -= 0.1;                                          // plap…
+    if (tokensOf(text).length >= 3) I += 0.06;                                         // rajada
+    const win = String(before).slice(-160) + ' ' + String(after).slice(0, 100);
+    I += Math.min(countRe(HARD_RE, win), 3) * 0.11;                                    // "forte", "rápido"...
+    I -= Math.min(countRe(SOFT_RE, win), 3) * 0.11;                                    // "devagar", "suave"...
+    I += Math.min(countRe(/!/g, win), 4) * 0.02;
+    const main = ctx().extensionSettings && ctx().extensionSettings.smut_forge;      // fase da cena
+    if (main && main.enabled !== false && PHASE_BIAS[main.phase]) I += PHASE_BIAS[main.phase];
+    return clamp(I, 0, 1);
+}
+export const levelOf = (I) => (I < 0.38 ? 'soft' : (I > 0.62 ? 'hard' : 'med'));
+
+// ---------- Biblioteca de sons REAIS (pasta sounds/ + sounds.json) ----------
+const ALIAS = {
+    impact: 'impact', impacto: 'impact', tapa: 'impact', tapas: 'impact', plap: 'impact', slap: 'impact',
+    crack: 'crack', estalo: 'crack', chicote: 'crack', whip: 'crack',
+    wet: 'wet', molhado: 'wet', molhada: 'wet', molhados: 'wet',
+    suck: 'suck', chupada: 'suck', chupar: 'suck', slurp: 'suck',
+    kiss: 'kiss', beijo: 'kiss', beijos: 'kiss',
+    throat: 'throat', garganta: 'throat', engolir: 'throat', gulp: 'throat',
+    moan: 'moan', gemido: 'moan', gemidos: 'moan',
+    breath: 'breath', ofego: 'breath', ofegar: 'breath', respiracao: 'breath',
+    bed: 'bed', cama: 'bed', rangido: 'bed',
+    heart: 'heart', coracao: 'heart', batimento: 'heart',
+    growl: 'growl', rosnado: 'growl',
+    cloth: 'cloth', tecido: 'cloth', roupa: 'cloth', ziper: 'cloth',
+    buzz: 'buzz', vibrador: 'buzz',
+    generic: 'generic', outro: 'generic', outros: 'generic',
+};
+const keyNorm = (k) => String(k).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z]/g, '');
+function levelFromWord(w) {
+    const n = keyNorm(w);
+    if (/(suave|soft|leve|lento|slow|fraco|baixo|gentle|light|devagar|calmo)/.test(n)) return 'soft';
+    if (/(forte|hard|intens|rapid|fast|alto|loud|brut|heavy|pesado|selvagem)/.test(n)) return 'hard';
+    return 'med';
+}
+export function parseManifest(map) {
+    const out = [], unknown = [];
+    for (const [key, val] of Object.entries(map || {})) {
+        const type = ALIAS[keyNorm(key)];
+        if (!type) { unknown.push(key); continue; }
+        const add = (f, lv) => { if (typeof f === 'string' && f.trim()) out.push({ type, level: lv || levelFromWord(f), name: f.trim() }); };
+        if (Array.isArray(val)) val.forEach(f => add(f));
+        else if (typeof val === 'string') add(val);
+        else if (val && typeof val === 'object') {
+            for (const [lk, files] of Object.entries(val)) {
+                const lv = levelFromWord(lk);
+                (Array.isArray(files) ? files : [files]).forEach(f => add(f, lv));
+            }
+        }
+    }
+    return { out, unknown };
+}
+
+const LIB = {};          // tipo -> [{ buf, offset, dur, level, name }] (ordenado por duração)
+let RAW = [];
+let loadState = 'idle';  // idle | fetching | fetched | decoding | ready | none | error
+let loadInfo = { missing: [], broken: [], unknown: [], jsonError: null };
+const lastPick = {};
+const warned = new Set();
+
+async function fetchSounds(force) {
+    if (loadState === 'fetching' || loadState === 'decoding') return;
+    loadState = 'fetching';
+    renderStatus();
+    RAW = [];
+    for (const k of Object.keys(LIB)) delete LIB[k];
+    loadInfo = { missing: [], broken: [], unknown: [], jsonError: null };
+    warned.clear();
+    let map;
+    try {
+        const res = await fetch(new URL('sounds.json', SOUNDS_URL), { cache: 'no-store' });
+        const txt = res.ok ? (await res.text()).replace(/^\uFEFF/, '') : '';
+        if (!res.ok || txt.trim().startsWith('<')) { loadState = 'none'; renderStatus(); return; }
+        try {
+            map = JSON.parse(txt);
+        } catch (e) {
+            loadInfo.jsonError = e.message;
+            loadState = 'error';
+            renderStatus();
+            toastr.error('Erro de digitação no sounds.json: ' + esc(e.message) + '<br>Dica: confira as vírgulas, aspas e colchetes.', '🔊 Smut Forge', { timeOut: 15000 });
+            return;
+        }
+    } catch (e) {
+        loadState = 'none';
+        renderStatus();
+        return;
+    }
+    const { out, unknown } = parseManifest(map);
+    loadInfo.unknown = unknown;
+    await Promise.all(out.map(async (item) => {
+        try {
+            const r = await fetch(new URL(item.name, SOUNDS_URL), { cache: force ? 'reload' : 'default' });
+            if (!r.ok) { loadInfo.missing.push(item.name); return; }
+            item.ab = await r.arrayBuffer();
+            RAW.push(item);
+        } catch (e) {
+            loadInfo.missing.push(item.name);
+        }
+    }));
+    loadState = 'fetched';
+    if (AC) await decodeAll(); else renderStatus();
+}
+
+// Mede onde o som começa/termina de verdade (corta silêncio do início e do fim)
+function trimInfo(buf) {
+    const d = buf.getChannelData(0), sr = buf.sampleRate;
+    let peak = 0;
+    for (let i = 0; i < d.length; i += 4) { const a = Math.abs(d[i]); if (a > peak) peak = a; }
+    const th = Math.max(0.003, peak * 0.06);
+    let start = 0;
+    while (start < d.length && Math.abs(d[start]) < th) start++;
+    let end = d.length - 1;
+    while (end > start && Math.abs(d[end]) < th) end--;
+    const offset = Math.max(0, start / sr - 0.004);
+    const dur = Math.max(0.05, Math.min(buf.duration - offset, (end - start) / sr + 0.08));
+    return { offset, dur };
+}
+
+async function decodeAll() {
+    if (loadState !== 'fetched' || !AC) return;
+    loadState = 'decoding';
+    renderStatus();
+    for (const item of RAW) {
+        try {
+            const buf = await AC.decodeAudioData(item.ab.slice(0));
+            const { offset, dur } = trimInfo(buf);
+            (LIB[item.type] = LIB[item.type] || []).push({ buf, offset, dur, level: item.level, name: item.name });
+        } catch (e) {
+            loadInfo.broken.push(item.name);
+        }
+        item.ab = null;
+    }
+    RAW = [];
+    for (const list of Object.values(LIB)) list.sort((a, b) => a.dur - b.dur);
+    loadState = 'ready';
+    renderStatus();
+    const total = Object.values(LIB).reduce((n, l) => n + l.length, 0);
+    const few = (arr) => arr.slice(0, 6).map(esc).join(', ') + (arr.length > 6 ? ` (+${arr.length - 6})` : '');
+    if (total) toastr.success(`${total} sons reais prontos 🎧`, '🔊 Smut Forge', { timeOut: 3000 });
+    if (loadInfo.missing.length) toastr.warning('Não encontrei estes arquivos (confira o nome exato, com maiúsculas e extensão): ' + few(loadInfo.missing), '🔊 sounds.json', { timeOut: 15000 });
+    if (loadInfo.broken.length) toastr.warning('Não consegui ler estes arquivos (use .mp3, .ogg ou .wav): ' + few(loadInfo.broken), '🔊 sounds.json', { timeOut: 15000 });
+    if (loadInfo.unknown.length) toastr.warning('Categorias que eu não conheço no sounds.json: ' + few(loadInfo.unknown), '🔊 sounds.json', { timeOut: 15000 });
+}
+
+// ---------- Motor de áudio ----------
+let AC = null, MASTER = null, SEND = null;
+const VOICES = [];
+const TIMERS = new Set();
+const VOCAL = ['moan', 'breath', 'growl'];
+const FALLBACK = { crack: ['impact'], suck: ['wet'], throat: ['suck', 'wet'], kiss: ['suck', 'wet'], generic: ['impact', 'wet'] };
+const MAX_DUR = { impact: 1.5, crack: 1.5, kiss: 1.2, wet: 2, suck: 2.5, throat: 2, bed: 2.5, cloth: 2.5, generic: 1.5 };
 
 function audio() {
     if (!AC) {
@@ -100,20 +288,19 @@ function audio() {
         if (!AudioCtx) return null;
         AC = new AudioCtx();
         const comp = AC.createDynamicsCompressor();
-        comp.threshold.value = -14;
-        comp.ratio.value = 4;
+        comp.threshold.value = -10;
+        comp.ratio.value = 3;
+        comp.attack.value = 0.003;
+        comp.release.value = 0.15;
         MASTER = AC.createGain();
         MASTER.connect(comp);
         comp.connect(AC.destination);
         const conv = AC.createConvolver();
-        conv.buffer = impulse(1.1);
+        conv.buffer = impulse(1.2);
         SEND = AC.createGain();
         SEND.connect(conv);
         conv.connect(MASTER);
-        NOISE = AC.createBuffer(1, AC.sampleRate * 2, AC.sampleRate);
-        const d = NOISE.getChannelData(0);
-        for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-        loadCustom();
+        if (loadState === 'fetched') decodeAll();
     }
     applyVolumes();
     if (AC.state === 'suspended') AC.resume();
@@ -123,8 +310,8 @@ function audio() {
 function applyVolumes() {
     if (!AC) return;
     const s = SX();
-    MASTER.gain.value = (Number(s.volume) / 100) * 0.9;
-    SEND.gain.value = (Number(s.room) / 100) * 0.6;
+    MASTER.gain.value = Number(s.volume) / 100;
+    SEND.gain.value = (Number(s.room) / 100) * 0.5;
 }
 
 function impulse(sec) {
@@ -137,326 +324,148 @@ function impulse(sec) {
     return b;
 }
 
-function distCurve(k) {
-    const n = 1024, c = new Float32Array(n);
-    for (let i = 0; i < n; i++) {
-        const x = i * 2 / n - 1;
-        c[i] = ((3 + k) * x * 20 * Math.PI / 180) / (Math.PI + k * Math.abs(x));
+// Escolhe a lista certa: tipo + intensidade (com plano B se faltar arquivo)
+function poolFor(type, level) {
+    const chain = [type].concat(FALLBACK[type] || []);
+    for (const t of chain) {
+        const all = LIB[t];
+        if (!all || !all.length) continue;
+        const order = level === 'soft' ? ['soft', 'med'] : level === 'hard' ? ['hard', 'med'] : ['med'];
+        for (const lv of order) {
+            const l = all.filter(x => x.level === lv);
+            if (l.length) return { key: t + ':' + lv, list: l };
+        }
+        return { key: t + ':all', list: all };
     }
-    return c;
+    return null;
 }
 
-function bus(pan) {
-    const g = AC.createGain();
-    if (AC.createStereoPanner) {
-        const p = AC.createStereoPanner();
-        p.pan.value = clamp(pan, -1, 1);
-        g.connect(p); p.connect(MASTER); p.connect(SEND);
+// Sorteia um arquivo sem repetir o último; gemidos longos (aaaahhn) puxam arquivos mais longos
+function pickSample(type, level, lenFactor) {
+    const p = poolFor(type, level);
+    if (!p) return null;
+    const { key, list } = p;
+    let idx;
+    if (VOCAL.includes(type) && list.length >= 3) {
+        const target = Math.round(clamp(lenFactor, 0, 1) * (list.length - 1));
+        idx = clamp(target + Math.round(rnd(-1, 1)), 0, list.length - 1);
     } else {
-        g.connect(MASTER); g.connect(SEND);
+        idx = Math.floor(Math.random() * list.length);
     }
-    return g;
-}
-function G(v = 1) { const g = AC.createGain(); g.gain.value = v; return g; }
-function F(type, freq, q = 1) { const f = AC.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = q; return f; }
-function N(t, dur) { const s = AC.createBufferSource(); s.buffer = NOISE; s.loop = true; s.start(t, Math.random() * 1.5); s.stop(t + dur + 0.05); return s; }
-function O(type, freq, t, dur) { const o = AC.createOscillator(); o.type = type; o.frequency.setValueAtTime(freq, t); o.start(t); o.stop(t + dur + 0.05); return o; }
-function env(g, t, a, peak, d) {
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(peak, t + a);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + a + d);
-}
-function bubble(t, out, vol) {
-    const o = O('sine', rnd(220, 380), t, 0.06), g = G();
-    o.frequency.exponentialRampToValueAtTime(rnd(700, 1200), t + rnd(0.02, 0.04));
-    env(g, t, 0.002, vol, 0.035);
-    o.connect(g).connect(out);
+    if (list.length > 1 && idx === lastPick[key]) idx = (idx + 1 + Math.floor(Math.random() * (list.length - 1))) % list.length;
+    lastPick[key] = idx;
+    return list[idx];
 }
 
-// Cada síntese recebe (tempo, saída, token normalizado, texto original) e devolve a duração.
-const SYNTH = {
-    impact(t, out) {
-        const n = N(t, 0.15), hp = F('highpass', rnd(600, 1100)), pk = F('peaking', rnd(1800, 2600), 1), g = G();
-        pk.gain.value = 6;
-        env(g, t, 0.002, 1, rnd(0.05, 0.09));
-        n.connect(hp).connect(pk).connect(g).connect(out);
-        const o = O('sine', rnd(150, 190), t, 0.16), g2 = G();
-        o.frequency.exponentialRampToValueAtTime(50, t + 0.12);
-        env(g2, t, 0.002, 0.8, 0.11);
-        o.connect(g2).connect(out);
-        return 0.16;
-    },
-    crack(t, out) {
-        const n = N(t, 0.2), hp = F('highpass', 2600), g = G();
-        env(g, t, 0.001, 1, 0.03);
-        n.connect(hp).connect(g).connect(out);
-        const n2 = N(t, 0.2), bp = F('bandpass', rnd(1500, 2200), 2), g2 = G();
-        env(g2, t + 0.005, 0.002, 0.5, 0.13);
-        n2.connect(bp).connect(g2).connect(out);
-        return 0.18;
-    },
-    wet(t, out) {
-        const n = N(t, 0.25), bp = F('bandpass', 1200, 4), g = G();
-        bp.frequency.setValueAtTime(rnd(1000, 1500), t);
-        bp.frequency.exponentialRampToValueAtTime(rnd(250, 400), t + 0.14);
-        env(g, t, 0.006, 1.2, rnd(0.1, 0.16));
-        n.connect(bp).connect(g).connect(out);
-        const k = Math.floor(rnd(2, 5));
-        for (let i = 0; i < k; i++) bubble(t + rnd(0.01, 0.12), out, rnd(0.25, 0.45));
-        return 0.2;
-    },
-    suck(t, out) {
-        const d = rnd(0.32, 0.45);
-        const n = N(t, d), bp = F('bandpass', 500, 9), am = G(0.6), g = G();
-        bp.frequency.setValueAtTime(rnd(400, 550), t);
-        bp.frequency.linearRampToValueAtTime(rnd(1400, 1900), t + d * 0.5);
-        bp.frequency.linearRampToValueAtTime(rnd(600, 800), t + d);
-        const lfo = O('sine', rnd(18, 28), t, d), depth = G(0.4);
-        lfo.connect(depth).connect(am.gain);
-        g.gain.setValueAtTime(0.0001, t);
-        g.gain.exponentialRampToValueAtTime(1.6, t + 0.04);
-        g.gain.setValueAtTime(1.6, t + d * 0.7);
-        g.gain.exponentialRampToValueAtTime(0.0001, t + d);
-        n.connect(bp).connect(am).connect(g).connect(out);
-        bubble(t + d * 0.9, out, 0.3);
-        return d + 0.05;
-    },
-    kiss(t, out) {
-        const pop = (tt, v) => {
-            const n = N(tt, 0.05), hp = F('highpass', 2200), g = G();
-            env(g, tt, 0.001, v, 0.025);
-            n.connect(hp).connect(g).connect(out);
-            const o = O('sine', rnd(1500, 2000), tt, 0.05), g2 = G();
-            o.frequency.exponentialRampToValueAtTime(rnd(400, 600), tt + 0.03);
-            env(g2, tt, 0.001, v * 0.6, 0.035);
-            o.connect(g2).connect(out);
-        };
-        pop(t, 0.7);
-        pop(t + rnd(0.06, 0.1), 0.45);
-        return 0.18;
-    },
-    throat(t, out, tok) {
-        const gulp = /^g+u*l/.test(tok);
-        const o = O('sine', gulp ? rnd(350, 420) : rnd(160, 200), t, 0.2), lp = F('lowpass', 900), g = G();
-        o.frequency.exponentialRampToValueAtTime(gulp ? 110 : 80, t + 0.13);
-        env(g, t, 0.005, 0.9, 0.14);
-        o.connect(lp).connect(g).connect(out);
-        const n = N(t, 0.2), lp2 = F('lowpass', gulp ? 600 : 450, 3), g2 = G();
-        env(g2, t, 0.005, gulp ? 0.35 : 0.8, gulp ? 0.1 : 0.16);
-        n.connect(lp2).connect(g2).connect(out);
-        if (!gulp) {
-            const s = O('sawtooth', rnd(85, 105), t, 0.2), ws = AC.createWaveShaper(), lp3 = F('lowpass', 700), g3 = G();
-            ws.curve = DIST || (DIST = distCurve(30));
-            env(g3, t, 0.01, 0.35, 0.16);
-            s.connect(ws).connect(lp3).connect(g3).connect(out);
-        }
-        return 0.22;
-    },
-    moan(t, out, tok, raw) {
-        const s = SX();
-        let vowel = 'a';
-        if (/o/.test(tok)) vowel = 'o';
-        else if (/^[hmn]+g*h*$/.test(tok)) vowel = 'm';
-        else if (/[iy]/.test(tok) && !/a/.test(tok)) vowel = 'i';
-        else if (/u/.test(tok) && !/a/.test(tok)) vowel = 'u';
-        const FORM = {
-            a: [[800, 1, 8], [1150, 0.5, 9], [2900, 0.2, 10]],
-            o: [[450, 1, 8], [800, 0.45, 9], [2830, 0.12, 10]],
-            u: [[325, 1, 8], [700, 0.35, 9], [2530, 0.1, 10]],
-            i: [[300, 1, 8], [2300, 0.4, 10], [3000, 0.25, 12]],
-            m: [[300, 1, 5], [2000, 0.08, 8], [2700, 0.05, 10]],
-        }[vowel];
-        const female = s.voice !== 'grave';
-        const shift = female ? 1.15 : 1;
-        const f0 = female ? rnd(215, 265) : rnd(105, 135);
-        const d = clamp(0.35 + tok.length * 0.07, 0.4, 1.8);
-        const playful = /[~♡♥]/.test(raw);
-        const mix = G(0.5);
-        const o1 = O('sawtooth', f0, t, d), o2 = O('sawtooth', f0 * 1.007, t, d);
-        for (const o of [o1, o2]) {
-            o.frequency.setValueAtTime(f0 * 0.9, t);
-            o.frequency.linearRampToValueAtTime(f0 * rnd(1.12, 1.25), t + d * 0.3);
-            o.frequency.linearRampToValueAtTime(f0 * (playful ? 1.3 : 0.82), t + d);
-            o.connect(mix);
-        }
-        const vib = O('sine', rnd(4.5, 6), t, d), vd = G(f0 * 0.025);
-        vib.connect(vd); vd.connect(o1.frequency); vd.connect(o2.frequency);
-        const br = N(t, d), brHp = F('highpass', 1200), brG = G(0.12);
-        br.connect(brHp).connect(brG);
-        const e = G();
-        e.gain.setValueAtTime(0.0001, t);
-        e.gain.exponentialRampToValueAtTime(1, t + 0.09);
-        e.gain.linearRampToValueAtTime(0.75, t + d * 0.65);
-        e.gain.exponentialRampToValueAtTime(0.0001, t + d);
-        for (const [f, a, q] of FORM) {
-            const bp = F('bandpass', f * shift, q), ga = G(a * 2.2);
-            mix.connect(bp); brG.connect(bp);
-            bp.connect(ga).connect(e);
-        }
-        e.connect(F('lowpass', 5000)).connect(out);
-        return d;
-    },
-    breath(t, out, tok) {
-        const short = /f/.test(tok);
-        const d = short ? rnd(0.18, 0.25) : clamp(0.3 + tok.length * 0.05, 0.35, 0.8);
-        const n = N(t, d), bp = F('bandpass', rnd(900, 1400), 0.8), lp = F('lowpass', 3500), g = G();
-        g.gain.setValueAtTime(0.0001, t);
-        g.gain.exponentialRampToValueAtTime(0.8, t + d * 0.3);
-        g.gain.exponentialRampToValueAtTime(0.0001, t + d);
-        n.connect(bp).connect(lp).connect(g).connect(out);
-        return d;
-    },
-    bed(t, out) {
-        const d = rnd(0.25, 0.38);
-        const n = N(t, d), g = G(0);
-        const b1 = F('bandpass', rnd(550, 750), 14), b2 = F('bandpass', rnd(1300, 1600), 10), g1 = G(5), g2 = G(3);
-        let tt = t, gap = rnd(0.006, 0.009);
-        g.gain.setValueAtTime(0, t);
-        while (tt < t + d) {
-            g.gain.setValueAtTime(rnd(0.6, 1), tt);
-            g.gain.setValueAtTime(0, tt + 0.0015);
-            tt += gap;
-            gap *= rnd(1.03, 1.08);
-        }
-        n.connect(g);
-        g.connect(b1).connect(g1).connect(out);
-        g.connect(b2).connect(g2).connect(out);
-        return d;
-    },
-    heart(t, out) {
-        const thump = (tt, v) => {
-            const o = O('sine', 70, tt, 0.2), lp = F('lowpass', 200), g = G();
-            o.frequency.exponentialRampToValueAtTime(38, tt + 0.12);
-            env(g, tt, 0.006, v, 0.14);
-            o.connect(lp).connect(g).connect(out);
-        };
-        thump(t, 1.4);
-        thump(t + 0.17, 1.0);
-        return 0.42;
-    },
-    growl(t, out) {
-        const d = rnd(0.5, 0.75);
-        const o = O('sawtooth', rnd(75, 95), t, d), am = G(0.5), lfo = O('square', rnd(24, 32), t, d), depth = G(0.5);
-        o.frequency.linearRampToValueAtTime(rnd(60, 70), t + d);
-        lfo.connect(depth).connect(am.gain);
-        const lp = F('lowpass', 750, 2), g = G();
-        g.gain.setValueAtTime(0.0001, t);
-        g.gain.exponentialRampToValueAtTime(0.9, t + 0.06);
-        g.gain.setValueAtTime(0.9, t + d * 0.7);
-        g.gain.exponentialRampToValueAtTime(0.0001, t + d);
-        o.connect(am).connect(lp).connect(g).connect(out);
-        const n = N(t, d), nlp = F('lowpass', 400), ng = G(0.4);
-        n.connect(nlp).connect(ng).connect(g);
-        return d;
-    },
-    cloth(t, out, tok) {
-        const zip = /^z/.test(tok), swish = /^s/.test(tok);
-        const d = swish ? 0.3 : rnd(0.28, 0.42);
-        const n = N(t, d), g = G(0);
-        const f = swish ? F('bandpass', 700, 1.5) : F(zip ? 'bandpass' : 'highpass', zip ? 2000 : 1500, zip ? 3 : 0.7);
-        if (swish || zip) {
-            f.frequency.setValueAtTime(swish ? 600 : 1800, t);
-            f.frequency.exponentialRampToValueAtTime(swish ? 2600 : 5500, t + d);
-        }
-        if (swish) {
-            env(g, t, d * 0.4, 0.7, d * 0.6);
-        } else {
-            let tt = t;
-            while (tt < t + d) {
-                g.gain.setValueAtTime(rnd(zip ? 0.4 : 0.1, 1), tt);
-                tt += zip ? 0.004 : rnd(0.003, 0.012);
-            }
-            g.gain.setValueAtTime(0, t + d);
-        }
-        n.connect(f).connect(g).connect(out);
-        return d;
-    },
-    buzz(t, out, tok) {
-        const d = clamp(0.4 + tok.length * 0.1, 0.6, 1.4);
-        const f0 = rnd(135, 165);
-        const o1 = O('sawtooth', f0, t, d), o2 = O('square', f0 * 2.01, t, d), o2g = G(0.3);
-        const trem = O('sine', rnd(6, 9), t, d), td = G(0.15), am = G(0.85);
-        trem.connect(td).connect(am.gain);
-        const lp = F('lowpass', 1200, 5), g = G();
-        g.gain.setValueAtTime(0.0001, t);
-        g.gain.exponentialRampToValueAtTime(0.35, t + 0.05);
-        g.gain.setValueAtTime(0.35, t + d - 0.08);
-        g.gain.exponentialRampToValueAtTime(0.0001, t + d);
-        o1.connect(am);
-        o2.connect(o2g).connect(am);
-        am.connect(lp).connect(g).connect(out);
-        return d;
-    },
-    generic(t, out) {
-        const o = O('sine', rnd(500, 700), t, 0.08), g = G();
-        o.frequency.exponentialRampToValueAtTime(200, t + 0.06);
-        env(g, t, 0.002, 0.6, 0.06);
-        o.connect(g).connect(out);
-        return 0.1;
-    },
-};
-
-// ---------- Sons personalizados (pasta sounds/ + sounds.json) ----------
-async function loadCustom() {
+function fadeVoice(v) {
     try {
-        const res = await fetch(new URL('sounds/sounds.json', BASE_URL), { cache: 'no-cache' });
-        if (!res.ok) return;
-        const map = await res.json();
-        const folder = new URL('sounds/', BASE_URL);
-        for (const [type, files] of Object.entries(map)) {
-            if (!Array.isArray(files)) continue;
-            CUSTOM[type] = [];
-            for (const f of files) {
-                try {
-                    const r = await fetch(new URL(f, folder));
-                    if (!r.ok) continue;
-                    CUSTOM[type].push(await AC.decodeAudioData(await r.arrayBuffer()));
-                } catch (e) {
-                    console.warn('[SmutForge SFX] falha ao carregar', f, e);
-                }
-            }
-        }
-        console.log('[SmutForge SFX] sons personalizados carregados', Object.keys(CUSTOM));
-    } catch (e) {
-        // sem sons personalizados: tudo bem, usa os sintetizados
+        const n = AC.currentTime;
+        v.g.gain.cancelScheduledValues(n);
+        v.g.gain.setValueAtTime(v.g.gain.value, n);
+        v.g.gain.linearRampToValueAtTime(0, n + 0.06);
+        v.src.stop(n + 0.08);
+    } catch (e) { /* já parou */ }
+}
+
+// Toca 1 arquivo com variação humana de volume, velocidade/tom, estéreo e "brilho"
+function playSample(smp, t, I, type) {
+    const s = SX();
+    const vlo = clamp(Number(s.volMin) / 100, 0, 1.5);
+    const vhi = Math.max(vlo, clamp(Number(s.volMax) / 100, 0, 1.5));
+    const rlo = clamp(Number(s.rateMin) || 0.9, 0.5, 2);
+    const rhi = Math.max(rlo, clamp(Number(s.rateMax) || 1.15, 0.5, 2));
+    const tv = s.dynamic ? clamp(0.55 * I + 0.45 * Math.random(), 0, 1) : Math.random();
+    const tr = s.dynamic ? clamp(0.4 * I + 0.6 * Math.random(), 0, 1) : Math.random();
+    const vol = lerp(vlo, vhi, tv);
+    const rate = lerp(rlo, rhi, tr);
+
+    const cap = MAX_DUR[type] || 99;
+    const bufDur = Math.min(smp.dur, cap);
+    const realDur = bufDur / rate;
+
+    const src = AC.createBufferSource();
+    src.buffer = smp.buf;
+    src.playbackRate.value = rate;
+    const lp = AC.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = (s.dynamic && I < 0.5) ? 2500 * Math.pow(8, I * 2) : 20000; // suave = mais abafado
+    const g = AC.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.004);
+    if (smp.dur > cap) {
+        g.gain.setValueAtTime(vol, Math.max(t + 0.005, t + realDur - 0.08));
+        g.gain.linearRampToValueAtTime(0, t + realDur);
     }
+    src.connect(lp).connect(g);
+    if (AC.createStereoPanner) {
+        const pan = AC.createStereoPanner();
+        pan.pan.value = clamp(rnd(-1, 1) * (Number(s.stereo) / 100) * 0.8, -1, 1);
+        g.connect(pan);
+        pan.connect(MASTER);
+        pan.connect(SEND);
+    } else {
+        g.connect(MASTER);
+        g.connect(SEND);
+    }
+    src.start(t, smp.offset, bufDur + 0.02);
+    const v = { src, g };
+    VOICES.push(v);
+    src.onended = () => { const i = VOICES.indexOf(v); if (i >= 0) VOICES.splice(i, 1); };
+    while (VOICES.length > 12) fadeVoice(VOICES.shift());
+    return realDur;
 }
 
-function playBuffer(buf, t, out) {
-    const s = AC.createBufferSource();
-    s.buffer = buf;
-    s.playbackRate.value = rnd(0.94, 1.06);
-    s.connect(out);
-    s.start(t);
-    return buf.duration / s.playbackRate.value;
+function noSoundWarn(type) {
+    if (['idle', 'fetching', 'fetched', 'decoding'].includes(loadState)) {
+        toastr.info('Os sons ainda estão carregando… tenta de novo em um segundinho 🎧', '🔊 Smut Forge', { timeOut: 2500 });
+        return;
+    }
+    const key = (loadState === 'none' || loadState === 'error') ? '__none' : type;
+    if (warned.has(key)) return;
+    warned.add(key);
+    const msg = key === '__none'
+        ? 'Nenhum som real instalado ainda (falta a pasta sounds/ com o sounds.json). 🎧'
+        : `Sem arquivo de som para "${esc(LABELS[type] || type)}". Adicione um no sounds.json 🎧`;
+    toastr.info(msg, '🔊 Smut Forge', { timeOut: 6000 });
 }
 
-function playOne(type, raw, t) {
-    const out = bus(rnd(-1, 1) * (Number(SX().stereo) / 100) * 0.8);
-    const custom = CUSTOM[type];
-    if (custom && custom.length) return playBuffer(custom[Math.floor(Math.random() * custom.length)], t, out);
-    const fn = SYNTH[type] || SYNTH.generic;
-    return fn(t, out, normTok(raw) || 'x', String(raw));
-}
-
-// Toca a onomatopeia inteira (ex.: "PLAP PLAP PLAP" = 3 batidas). Devolve a duração total.
-export function playSfx(type, text, delay = 0) {
+// Toca uma onomatopeia inteira com ritmo de acordo com a intensidade.
+// "PLAP PLAP PLAP" suave = batidas espaçadas; forte = batidas rápidas, acelerando.
+export function playSfx(type, text, I = 0.5, delay = 0) {
     if (!SX().sound) return 0;
     const ac = audio();
     if (!ac) return 0;
-    const toks = tokensOf(text).slice(0, 6);
+    const level = levelOf(I);
+    const toks = tokensOf(text).slice(0, 8);
     if (!toks.length) toks.push(String(text));
-    const start = ac.currentTime + 0.03 + delay;
-    let t = start;
+    const start = ac.currentTime + 0.02 + delay;
+    let t = start, end = start, played = 0;
+    let interval = type === 'heart' ? lerp(0.95, 0.42, I) : lerp(0.7, 0.2, I);
     for (const tk of toks) {
-        try {
-            const d = playOne(type, tk, t);
-            t += d * rnd(0.75, 0.95) + rnd(0.04, 0.1);
-        } catch (e) {
-            console.warn('[SmutForge SFX]', e);
+        const lenF = clamp((normTok(tk).length - 3) / 7, 0, 1);
+        const smp = pickSample(type, level, lenF);
+        if (!smp) break;
+        const d = playSample(smp, t, clamp(I + rnd(-0.05, 0.05), 0, 1), type);
+        played++;
+        end = Math.max(end, t + d);
+        if (VOCAL.includes(type) || type === 'buzz') {
+            t += d * rnd(0.8, 0.92);
+        } else {
+            t += interval * rnd(0.88, 1.12);           // ritmo humano, nunca exato
+            if (I > 0.5 && toks.length >= 3) interval *= 0.94; // acelera na rajada
         }
     }
-    return t - start;
+    if (!played) { noSoundWarn(type); return 0; }
+    return end - start;
+}
+
+let playingEl = null;
+export function stopAll() {
+    TIMERS.forEach(clearTimeout);
+    TIMERS.clear();
+    if (AC) VOICES.splice(0).forEach(fadeVoice);
+    playingEl = null;
+    updatePlayButtons();
 }
 
 // ---------- Visual: transforma onomatopeias do chat em botões estilizados ----------
@@ -469,7 +478,6 @@ function makeSpan(text, type) {
     sp.className = 'sf-sfx sf-t-' + type;
     sp.dataset.sfx = type;
     sp.dataset.text = text;
-    sp.title = ((TYPES[type] && TYPES[type].label) || 'Som') + ' — clique para ouvir 🔊';
     sp.textContent = text;
     return sp;
 }
@@ -502,6 +510,50 @@ function wrapNode(node, re) {
     node.parentNode.replaceChild(frag, node);
 }
 
+// Lê o texto em volta da onomatopeia (antes e depois) para medir a intensidade
+function spanContext(sp) {
+    const block = sp.closest('p, li, blockquote') || sp.closest('.mes_text') || sp.parentElement;
+    try {
+        const r1 = document.createRange();
+        r1.selectNodeContents(block);
+        r1.setEndBefore(sp);
+        let before = r1.toString();
+        const r2 = document.createRange();
+        r2.selectNodeContents(block);
+        r2.setStartAfter(sp);
+        const after = r2.toString();
+        if (before.length < 60 && block.previousElementSibling) before = block.previousElementSibling.textContent + ' ' + before;
+        return { before: before.slice(-160), after: after.slice(0, 120) };
+    } catch (e) {
+        return { before: '', after: '' };
+    }
+}
+
+function spanIntensity(sp) {
+    if (sp.dataset.i !== undefined) return Number(sp.dataset.i);
+    const c = spanContext(sp);
+    return intensityOf(sp.dataset.text || sp.textContent, c.before, c.after);
+}
+
+const LV_ICON = { soft: '🌙 suave', med: '⚖️ normal', hard: '🔥 forte' };
+function tagSpan(sp) {
+    const I = spanIntensity(sp);
+    const lv = levelOf(I);
+    sp.dataset.i = I.toFixed(2);
+    sp.dataset.lv = lv;
+    sp.classList.remove('sf-lv-soft', 'sf-lv-med', 'sf-lv-hard');
+    sp.classList.add('sf-lv-' + lv);
+    sp.title = (LABELS[sp.dataset.sfx] || 'Som') + ' • ' + LV_ICON[lv] + ' — clique para ouvir 🔊';
+}
+
+function markAvailability(sp) {
+    if (loadState !== 'ready' && loadState !== 'none' && loadState !== 'error') return;
+    sp.classList.toggle('sf-nosnd', !poolFor(sp.dataset.sfx, 'med'));
+}
+function refreshAvailability() {
+    document.querySelectorAll('.sf-sfx').forEach(markAvailability);
+}
+
 export function processMes(el) {
     if (!el || !el.isConnected || el.querySelector('textarea')) return;
     const s = SX();
@@ -515,6 +567,10 @@ export function processMes(el) {
 
     const spans = el.querySelectorAll('.sf-sfx');
     if (!spans.length) return;
+    spans.forEach(sp => {
+        if (sp.dataset.lv === undefined) tagSpan(sp);
+        markAvailability(sp);
+    });
     el.querySelectorAll('p').forEach(p => {
         if (!p.querySelector('.sf-sfx') || p.classList.contains('sf-sfx-line')) return;
         const clone = p.cloneNode(true);
@@ -533,7 +589,7 @@ function popFx(sp) {
     sp.classList.remove('sf-pop');
     void sp.offsetWidth;
     sp.classList.add('sf-pop');
-    if (SX().anim && ['impact', 'crack', 'bed', 'growl'].includes(sp.dataset.sfx)) {
+    if (SX().anim && (sp.dataset.lv === 'hard' || ['impact', 'crack', 'bed', 'growl'].includes(sp.dataset.sfx))) {
         const mes = sp.closest('.mes');
         if (mes) {
             mes.classList.remove('sf-shake');
@@ -543,17 +599,35 @@ function popFx(sp) {
     }
 }
 
+function updatePlayButtons() {
+    document.querySelectorAll('.sf-playall').forEach(b => {
+        const on = !!playingEl && b.closest('.mes_text') === playingEl;
+        const label = on ? '⏹️ Parar' : '🔊 Tocar os sons desta mensagem';
+        if (b.textContent !== label) b.textContent = label;
+        b.classList.toggle('sf-playing', on);
+    });
+}
+
+// Toca a mensagem inteira como uma "trilha sonora": pausas curtas nas partes intensas, longas nas suaves
 export function playAll(el) {
     if (!el) return;
-    const spans = Array.from(el.querySelectorAll('.sf-sfx')).slice(0, 24);
+    stopAll();
+    const spans = Array.from(el.querySelectorAll('.sf-sfx')).slice(0, 30);
+    if (!spans.length) return;
+    playingEl = el;
+    updatePlayButtons();
     let delay = 0;
     for (const sp of spans) {
+        const I = spanIntensity(sp);
         const myDelay = delay;
-        const d = playSfx(sp.dataset.sfx, sp.dataset.text || sp.textContent, myDelay);
-        setTimeout(() => popFx(sp), myDelay * 1000);
-        delay += d + rnd(0.2, 0.45);
-        if (delay > 15) break;
+        const d = playSfx(sp.dataset.sfx, sp.dataset.text || sp.textContent, I, myDelay);
+        const tm = setTimeout(() => { TIMERS.delete(tm); popFx(sp); }, myDelay * 1000);
+        TIMERS.add(tm);
+        delay += d + lerp(0.55, 0.12, I) * rnd(0.8, 1.2);
+        if (delay > 25) break;
     }
+    const done = setTimeout(() => { TIMERS.delete(done); playingEl = null; updatePlayButtons(); }, delay * 1000 + 300);
+    TIMERS.add(done);
 }
 
 // Observa o chat (mensagens novas, streaming, edições, swipes)
@@ -589,19 +663,11 @@ function startObserver() {
     }).observe(chat, { childList: true, subtree: true, characterData: true });
 }
 
-function reprocessAll() {
+function reprocessAll(retag) {
+    if (retag) document.querySelectorAll('#chat .sf-sfx').forEach(sp => { delete sp.dataset.lv; delete sp.dataset.i; });
     document.querySelectorAll('#chat .mes_text').forEach(el => {
         try { processMes(el); } catch (e) { console.warn('[SmutForge SFX]', e); }
     });
-}
-
-function insertIntoInput(text) {
-    const ta = document.getElementById('send_textarea');
-    if (!ta) return;
-    const sep = ta.value && !/\s$/.test(ta.value) ? ' ' : '';
-    ta.value += sep + '[[' + text + ']] ';
-    ta.dispatchEvent(new Event('input', { bubbles: true }));
-    ta.focus();
 }
 
 function applyBodyClasses() {
@@ -611,9 +677,41 @@ function applyBodyClasses() {
 }
 
 // ---------- Painel de configurações ----------
+const TEST_I = { soft: 0.15, med: 0.5, hard: 0.9 };
+function boardText(sample) {
+    const lv = SX().testLevel;
+    if (lv === 'soft') return sample.toLowerCase() + '…';
+    if (lv === 'hard') return sample.toUpperCase() + '!';
+    return sample;
+}
+
+function renderStatus() {
+    const $st = $('#sfx_status');
+    if ($st.length) {
+        let html = '';
+        if (loadState === 'none') html = '📭 Nenhum <code>sounds/sounds.json</code> encontrado — ainda sem sons reais.';
+        else if (loadState === 'error') html = '❌ Erro de digitação no sounds.json: ' + esc(loadInfo.jsonError || '');
+        else if (loadState === 'fetching' || loadState === 'decoding' || loadState === 'idle') html = '⏳ Carregando sons…';
+        else if (loadState === 'fetched') html = '👆 Sons baixados — clique em qualquer lugar da página para ativar o áudio.';
+        else {
+            const rows = Object.keys(LABELS).map(k => {
+                const l = LIB[k] || [];
+                if (!l.length) return '';
+                const c = (lv) => l.filter(x => x.level === lv).length;
+                return `<div>${esc(LABELS[k])}: <b>${l.length}</b> <small>(🌙${c('soft')} ⚖️${c('med')} 🔥${c('hard')})</small></div>`;
+            }).join('');
+            html = rows ? `<div class="sfx-status-grid">${rows}</div>` : '📭 O sounds.json está vazio ou nenhum arquivo foi encontrado.';
+            if (loadInfo.missing.length) html += `<div class="sfx-warn">⚠️ Não encontrados: ${loadInfo.missing.map(esc).join(', ')}</div>`;
+            if (loadInfo.broken.length) html += `<div class="sfx-warn">⚠️ Ilegíveis: ${loadInfo.broken.map(esc).join(', ')}</div>`;
+        }
+        $st.html(html);
+    }
+    refreshAvailability();
+}
+
 function settingsHtml() {
     const board = Object.entries(TYPES).map(([k, t]) =>
-        `<span class="sf-sfx sf-t-${k} sf-board" data-sfx="${k}" data-text="${t.sample}" title="${t.label} — clique: ouvir | Shift+clique: inserir na sua mensagem">${t.sample}</span>`,
+        `<span class="sf-sfx sf-t-${k} sf-board" data-sfx="${k}" data-sample="${t.sample}" data-text="${t.sample}" title="${t.label} — clique: ouvir | Shift+clique: inserir na sua mensagem">${t.sample}</span>`,
     ).join(' ');
     return `
     <div id="smutforge_sfx_settings">
@@ -625,6 +723,39 @@ function settingsHtml() {
         <div class="inline-drawer-content">
           <small>🎧 Mesa de som — clique para ouvir • Shift+clique insere na sua mensagem</small>
           <div class="sf-board-wrap">${board}</div>
+          <div class="sfx-row2">
+            <div>
+              <label for="sfx_testLevel">Testar a mesa como</label>
+              <select id="sfx_testLevel" class="text_pole">
+                <option value="auto">Automático</option>
+                <option value="soft">🌙 Suave / lento</option>
+                <option value="med">⚖️ Normal</option>
+                <option value="hard">🔥 Forte / rápido</option>
+              </select>
+            </div>
+            <div class="sfx-btns">
+              <div class="menu_button" id="sfx_reload">🔄 Recarregar sons</div>
+              <div class="menu_button" id="sfx_stop">⏹️ Parar tudo</div>
+            </div>
+          </div>
+          <div id="sfx_status" class="sfx-status"></div>
+          <hr>
+          <label class="checkbox_label"><input type="checkbox" id="sfx_dynamic"><span>🧠 Áudio dinâmico (ritmo, força e tom pelo contexto)</span></label>
+          <div class="sfx-row2">
+            <div><label for="sfx_volMin">Variação de volume — mín %</label><input id="sfx_volMin" class="text_pole" type="number" min="10" max="150" step="5"></div>
+            <div><label for="sfx_volMax">máx %</label><input id="sfx_volMax" class="text_pole" type="number" min="10" max="150" step="5"></div>
+          </div>
+          <div class="sfx-row2">
+            <div><label for="sfx_rateMin">Velocidade/tom — mín ×</label><input id="sfx_rateMin" class="text_pole" type="number" min="0.5" max="2" step="0.01"></div>
+            <div><label for="sfx_rateMax">máx ×</label><input id="sfx_rateMax" class="text_pole" type="number" min="0.5" max="2" step="0.01"></div>
+          </div>
+          <label for="sfx_volume">Volume geral</label>
+          <input id="sfx_volume" type="range" min="0" max="100">
+          <label for="sfx_stereo">Estéreo (sons passeando entre os fones)</label>
+          <input id="sfx_stereo" type="range" min="0" max="100">
+          <label for="sfx_room">Eco do quarto (ambiente)</label>
+          <input id="sfx_room" type="range" min="0" max="100">
+          <hr>
           <label class="checkbox_label"><input type="checkbox" id="sfx_prompt"><span>Pedir ao modelo MUITAS onomatopeias (em [[colchetes]])</span></label>
           <label for="sfx_density">Quantidade de onomatopeias</label>
           <select id="sfx_density" class="text_pole">
@@ -637,21 +768,25 @@ function settingsHtml() {
           <label class="checkbox_label"><input type="checkbox" id="sfx_autodetect"><span>Detectar onomatopeias mesmo sem [[colchetes]]</span></label>
           <label class="checkbox_label"><input type="checkbox" id="sfx_sound"><span>Sons ao clicar</span></label>
           <label class="checkbox_label"><input type="checkbox" id="sfx_autoplay"><span>Tocar sozinho quando a resposta chegar</span></label>
-          <label for="sfx_voice">Voz dos gemidos sintetizados</label>
-          <select id="sfx_voice" class="text_pole">
-            <option value="aguda">Aguda</option>
-            <option value="grave">Grave</option>
-          </select>
-          <label for="sfx_volume">Volume</label>
-          <input id="sfx_volume" type="range" min="0" max="100">
-          <label for="sfx_stereo">Estéreo (sons passeando entre os fones)</label>
-          <input id="sfx_stereo" type="range" min="0" max="100">
-          <label for="sfx_room">Eco do quarto (ambiente)</label>
-          <input id="sfx_room" type="range" min="0" max="100">
         </div>
       </div>
     </div>`;
 }
+
+const EXTRA_CSS = `
+.sf-sfx.sf-lv-hard { font-weight: 900; filter: saturate(1.5) brightness(1.2); }
+.sf-sfx.sf-lv-soft { opacity: .72; font-weight: 600; filter: saturate(.8); }
+.sf-sfx.sf-nosnd { cursor: help; }
+body.sf-novisual .sf-sfx { opacity: 1; filter: none; }
+.sf-playall.sf-playing { background: rgba(255, 90, 150, .4); }
+.sfx-row2 { display: flex; gap: 8px; align-items: flex-end; }
+.sfx-row2 > div { flex: 1; }
+.sfx-btns { display: flex; gap: 4px; }
+.sfx-btns .menu_button { flex: 1; margin: 0; text-align: center; }
+.sfx-status { font-size: .85em; margin: 6px 0; padding: 6px 8px; border-radius: 6px; background: rgba(0, 0, 0, .25); }
+.sfx-status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 2px 10px; }
+.sfx-warn { margin-top: 4px; color: #ffcf6b; }
+`;
 
 function bind(id, key, parse) {
     const $el = $('#' + id);
@@ -663,8 +798,19 @@ function bind(id, key, parse) {
         ctx().saveSettingsDebounced();
         applyBodyClasses();
         applyVolumes();
-        if (key === 'autodetect' || key === 'sound') reprocessAll();
+        if (key === 'testLevel') $('.sf-board').each(function () { this.dataset.text = boardText(this.dataset.sample); this.textContent = this.dataset.text; });
+        if (key === 'autodetect' || key === 'sound') reprocessAll(false);
+        if (key === 'dynamic') reprocessAll(true);
     });
+}
+
+function insertIntoInput(text) {
+    const ta = document.getElementById('send_textarea');
+    if (!ta) return;
+    const sep = ta.value && !/\s$/.test(ta.value) ? ' ' : '';
+    ta.value += sep + '[[' + text + ']] ';
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    ta.focus();
 }
 
 function registerSlash() {
@@ -675,11 +821,21 @@ function registerSlash() {
         name: 'sfx',
         callback: (_a, v) => {
             const text = String(v || 'PLAP').trim();
-            playSfx(classify(text, true), text);
+            playSfx(classify(text, true), text, intensityOf(text));
             return '';
         },
         unnamedArgumentList: [Arg.fromProps({ description: 'onomatopeia', typeList: [T.STRING], isRequired: false })],
-        helpString: 'Toca o som de uma onomatopeia. Ex: <code>/sfx PLAP PLAP</code>, <code>/sfx aahn~</code>',
+        helpString: 'Toca o som de uma onomatopeia. Ex: <code>/sfx PLAP! PLAP! PLAP!</code>, <code>/sfx aahn…</code>',
+    }));
+    P.addCommandObject(Cmd.fromProps({
+        name: 'sfx-stop',
+        callback: () => { stopAll(); return ''; },
+        helpString: 'Para todos os sons.',
+    }));
+    P.addCommandObject(Cmd.fromProps({
+        name: 'sfx-reload',
+        callback: () => { fetchSounds(true); return ''; },
+        helpString: 'Recarrega os sons da pasta sounds/.',
     }));
 }
 
@@ -698,12 +854,24 @@ function init() {
     link.rel = 'stylesheet';
     link.href = new URL('sfx.css', BASE_URL).href;
     document.head.appendChild(link);
+    const style = document.createElement('style');
+    style.textContent = EXTRA_CSS;
+    document.head.appendChild(style);
 
     let $target = $('#extensions_settings2');
     if (!$target.length) $target = $('#extensions_settings');
     $('#smutforge_sfx_settings').remove();
     $target.append(settingsHtml());
 
+    bind('sfx_testLevel', 'testLevel');
+    bind('sfx_dynamic', 'dynamic');
+    bind('sfx_volMin', 'volMin', Number);
+    bind('sfx_volMax', 'volMax', Number);
+    bind('sfx_rateMin', 'rateMin', Number);
+    bind('sfx_rateMax', 'rateMax', Number);
+    bind('sfx_volume', 'volume', Number);
+    bind('sfx_stereo', 'stereo', Number);
+    bind('sfx_room', 'room', Number);
     bind('sfx_prompt', 'prompt');
     bind('sfx_density', 'density');
     bind('sfx_visual', 'visual');
@@ -711,21 +879,28 @@ function init() {
     bind('sfx_autodetect', 'autodetect');
     bind('sfx_sound', 'sound');
     bind('sfx_autoplay', 'autoplay');
-    bind('sfx_voice', 'voice');
-    bind('sfx_volume', 'volume', Number);
-    bind('sfx_stereo', 'stereo', Number);
-    bind('sfx_room', 'room', Number);
+    $('.sf-board').each(function () { this.dataset.text = boardText(this.dataset.sample); this.textContent = this.dataset.text; });
+    $('#sfx_reload').on('click', () => fetchSounds(true));
+    $('#sfx_stop').on('click', stopAll);
     applyBodyClasses();
 
     $(document).on('click', '.sf-sfx', function (e) {
-        if (e.shiftKey && this.classList.contains('sf-board')) { insertIntoInput(this.dataset.text); return; }
         e.stopPropagation();
-        playSfx(this.dataset.sfx, this.dataset.text || this.textContent);
+        if (this.classList.contains('sf-board')) {
+            if (e.shiftKey) { insertIntoInput(this.dataset.text); return; }
+            const lv = SX().testLevel;
+            const I = TEST_I[lv] !== undefined ? TEST_I[lv] : intensityOf(this.dataset.text);
+            playSfx(this.dataset.sfx, this.dataset.text, I);
+            popFx(this);
+            return;
+        }
+        playSfx(this.dataset.sfx, this.dataset.text || this.textContent, spanIntensity(this));
         popFx(this);
     });
     $(document).on('click', '.sf-playall', function (e) {
         e.stopPropagation();
-        playAll(this.closest('.mes_text'));
+        const el = this.closest('.mes_text');
+        if (playingEl && playingEl === el) stopAll(); else playAll(el);
     });
 
     // O navegador só libera áudio depois do primeiro clique/tecla
@@ -749,11 +924,13 @@ function init() {
             if (autoplayId !== null && Number(id) === autoplayId) setTimeout(() => fireAutoplay(id), 100);
         });
     }
+    if (et.CHAT_CHANGED) ev.on(et.CHAT_CHANGED, stopAll);
 
-    try { registerSlash(); } catch (e) { console.warn('[SmutForge SFX] /sfx não registrado', e); }
+    try { registerSlash(); } catch (e) { console.warn('[SmutForge SFX] comandos não registrados', e); }
     startObserver();
-    reprocessAll();
-    console.log('[SmutForge SFX] carregado 🔊');
+    reprocessAll(false);
+    fetchSounds(false);
+    console.log('[SmutForge SFX] v2 carregado 🔊');
 }
 
 jQuery(() => {
