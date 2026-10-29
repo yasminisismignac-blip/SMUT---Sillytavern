@@ -6,13 +6,8 @@
     padding: 0 .14em;
     margin: 0 .05em;
     border-radius: .35em;
-    cursor: pointer;
     line-height: 1.15;
-    transition: transform .12s ease, filter .12s ease;
-    user-select: none;
 }
-.sf-sfx:hover { transform: scale(1.15) rotate(-3deg); filter: brightness(1.25); }
-.sf-sfx.sf-pop { animation: sf-pop .4s ease-out !important; }
 
 .sf-t-impact  { color: #ff3d6e; text-transform: uppercase; font-size: 1.12em; letter-spacing: .04em; transform: skew(-6deg);
                 text-shadow: 2px 2px 0 #4a0016, 0 0 10px rgba(255, 61, 110, .55); }
@@ -38,27 +33,12 @@
 /* Linha só de onomatopeias = estilo "quadrinho" */
 .mes_text p.sf-sfx-line { text-align: center; font-size: 1.3em; letter-spacing: .06em; margin: .4em 0; }
 
-.sf-playall {
-    display: inline-block; margin-top: .5em; padding: .15em .7em; font-size: .8em;
-    border-radius: 999px; cursor: pointer; user-select: none;
-    background: rgba(255, 90, 150, .15); border: 1px solid rgba(255, 90, 150, .45);
-}
-.sf-playall:hover { background: rgba(255, 90, 150, .3); }
-
-.sf-board-wrap { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; margin: 6px 0; border-radius: 8px; background: rgba(0, 0, 0, .35); }
-.sf-board-wrap .sf-sfx { padding: .15em .45em; background: rgba(255, 255, 255, .06); }
-
-.mes.sf-shake { animation: sf-shake .3s ease-in-out; }
-
-@keyframes sf-pop    { 0% { transform: scale(1); } 35% { transform: scale(1.5) rotate(-6deg); } 100% { transform: scale(1); } }
 @keyframes sf-sway   { 0%, 100% { transform: rotate(-2deg) translateY(0); } 50% { transform: rotate(2deg) translateY(-1px); } }
 @keyframes sf-beat   { 0%, 100% { transform: scale(1); } 15% { transform: scale(1.18); } 30% { transform: scale(1); } 45% { transform: scale(1.12); } }
 @keyframes sf-rumble { 0%, 100% { transform: translate(0, 0); } 25% { transform: translate(.5px, -.5px); } 75% { transform: translate(-.5px, .5px); } }
 @keyframes sf-buzz   { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(1px); } }
-@keyframes sf-shake  { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-3px); } 40% { transform: translateX(3px); }
-                       60% { transform: translateX(-2px); } 80% { transform: translateX(2px); } }
 
-body.sf-noanim .sf-sfx, body.sf-noanim .mes.sf-shake { animation: none !important; }
-body.sf-novisual .sf-sfx { all: unset; cursor: pointer; }
+body.sf-noanim .sf-sfx { animation: none !important; }
+body.sf-novisual .sf-sfx { all: unset; }
 body.sf-novisual .sf-t-kiss::after { content: none; }
-@media (prefers-reduced-motion: reduce) { .sf-sfx, .mes.sf-shake { animation: none !important; } }
+@media (prefers-reduced-motion: reduce) { .sf-sfx { animation: none !important; } }
