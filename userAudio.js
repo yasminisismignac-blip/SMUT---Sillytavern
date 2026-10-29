@@ -1,6 +1,3 @@
-// userAudio.js — Smut Forge 🎧 Meus áudios
-// Importa SFX e voz do personagem direto da pasta Downloads. Tudo fica salvo no navegador (IndexedDB).
-// Também guarda a URL do servidor TTS externo (XTTS/API no Colab) e usa a voz importada como referência.
 import { TYPES, SX, audio, setUserSounds, testMix, stopAll, testTts, refVoiceName, refreshTtsUi } from './sfx.js';
 
 const ctx = () => SillyTavern.getContext();
@@ -9,7 +6,6 @@ const STORE = 'files';
 
 let items = [];
 
-// ---------- Banco de arquivos ----------
 function openDB() {
     return new Promise((res, rej) => {
         const r = indexedDB.open(DB_NAME, 1);
@@ -45,11 +41,9 @@ async function dbDelete(id) {
     });
 }
 
-// ---------- Categorização automática ----------
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const norm = (s) => String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
-// 1) pelo nome do arquivo (ex.: "plap_01.mp3", "gemido forte.mp3"); 2) se não achar, pela duração
 const NAME_RULES = [
     ['crack', /crack|estalo|whip|chicote|snap/],
     ['impact', /plap|tapa|slap|impact|impacto|spank|bate|smack|thud/],
@@ -73,7 +67,6 @@ function detectType(name, dur) {
     return 'moan';
 }
 
-// Intensidade: força média do som (só a parte que realmente toca, sem o silêncio)
 async function analyze(file) {
     const ac = audio();
     if (!ac) throw new Error('Seu navegador não suporta áudio.');
@@ -87,7 +80,6 @@ async function analyze(file) {
     return { dur: buf.duration, rms: n ? Math.sqrt(sum / n) : 0 };
 }
 
-// suave / normal / forte. Com 3+ arquivos do mesmo tipo: divide em três partes pelo volume.
 function assignLevels() {
     const groups = {};
     items.filter(i => i.kind === 'sfx').forEach(i => (groups[i.type] = groups[i.type] || []).push(i));
@@ -107,7 +99,6 @@ function syncEngine() {
     updateRefInfo();
 }
 
-// ---------- Importar ----------
 async function doImport(files, kind) {
     const list = Array.from(files || []);
     if (!list.length) return;
@@ -134,7 +125,6 @@ async function doImport(files, kind) {
     if (fail.length) toastr.warning('Não consegui ler: ' + fail.slice(0, 5).join(', ') + ' (use .mp3 ou .wav)', '🎧 Smut Forge', { timeOut: 10000 });
 }
 
-// ---------- Interface ----------
 const LV = { soft: '🌙 suave', med: '⚖️ normal', hard: '🔥 forte' };
 const typeOptions = (sel) => Object.entries(TYPES).map(([k, t]) => [k, t.label]).concat([['generic', 'Outros']])
     .map(([k, label]) => `<option value="${k}"${k === sel ? ' selected' : ''}>${label}</option>`).join('');
@@ -180,7 +170,6 @@ async function removeItem(id) {
     syncEngine();
 }
 
-// Mostra qual voz importada será enviada como referência ao servidor TTS
 function updateRefInfo() {
     const r = refVoiceName(ctx().name2 || '');
     $('#sfa_tts_ref').text(r
@@ -239,6 +228,11 @@ function html() {
               </select>
             </div>
           </div>
+          <label for="sfa_ttsScope">O que narrar</label>
+          <select id="sfa_ttsScope" class="text_pole">
+            <option value="all">📖 Tudo (descrições + falas)</option>
+            <option value="dialogue">💬 Apenas diálogos (entre aspas)</option>
+          </select>
           <label for="sfa_ttsVol">Volume da narração</label>
           <input id="sfa_ttsVol" type="range" min="0" max="200">
           <small id="sfa_tts_ref"></small>
@@ -262,7 +256,6 @@ function html() {
     </div>`;
 }
 
-// Liga um campo do painel a uma configuração salva
 function bindField(id, key, { parse = (v) => v, after } = {}) {
     const $el = $('#' + id);
     const isCb = $el.is(':checkbox');
@@ -296,12 +289,12 @@ async function init() {
     $vol.val(SX().voiceVol);
     $vol.on('input change', () => { SX().voiceVol = Number($vol.val()); ctx().saveSettingsDebounced(); });
 
-    // --- TTS externo ---
     const trim = (v) => String(v).trim();
     bindField('sfa_ttsOn', 'ttsEnabled', { after: () => refreshTtsUi(true) });
     bindField('sfa_ttsUrl', 'ttsUrl', { parse: trim, after: () => refreshTtsUi(true) });
     bindField('sfa_ttsLang', 'ttsLang');
     bindField('sfa_ttsMode', 'ttsMode');
+    bindField('sfa_ttsScope', 'ttsScope', { after: () => refreshTtsUi(false) });
     bindField('sfa_ttsVol', 'ttsVol', { parse: Number, after: () => refreshTtsUi(false) });
     bindField('sfa_ttsFieldText', 'ttsFieldText', { parse: trim });
     bindField('sfa_ttsFieldLang', 'ttsFieldLang', { parse: trim });
@@ -326,12 +319,11 @@ async function init() {
     render();
     syncEngine();
 
-    // Troca de personagem/chat → atualiza qual voz serve de referência
     try {
         const c = ctx();
         const et = c.eventTypes || c.event_types;
         if (et && et.CHAT_CHANGED) c.eventSource.on(et.CHAT_CHANGED, updateRefInfo);
-    } catch (e) { /* opcional */ }
+    } catch (e) { }
 
     console.log('[SmutForge Áudio] pronto 🎧');
 }
