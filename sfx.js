@@ -605,6 +605,7 @@ export function stopAll() {
 // ---------- Narração por TTS externo (XTTS / API no Colab) ----------
 const TTS_CACHE = new Map();   // chave -> AudioBuffer
 const REF_B64 = new Map();     // id da referência -> base64 (modo JSON)
+const KNOWN_REFS = new Set();
 let warnedNoRef = false;
 
 export const ttsReady = () => {
@@ -660,25 +661,26 @@ function cleanForTts(t) {
         .trim();
 }
 
-// Quebra o texto em pedaços ≤ max caracteres, respeitando frases (o XTTS corta frases longas)
-function chunkText(text, max) {
+function chunkText(text, max, firstMax = max) {
     const out = [];
+    const lim = () => (out.length ? max : firstMax);
     const sentences = text.match(/[^.!?…]+[.!?…]*["”')]*\s*/g) || [text];
     let cur = '';
     const push = () => { if (cur.trim()) out.push(cur.trim()); cur = ''; };
     for (let s of sentences) {
         s = s.trim();
         if (!s) continue;
-        while (s.length > max) {
-            let cut = s.lastIndexOf(',', max - 1);
-            if (cut < max * 0.4) cut = s.lastIndexOf(' ', max - 1);
-            const take = cut < 1 ? max : cut + 1;
+        while (s.length > lim()) {
+            const L = lim();
+            let cut = s.lastIndexOf(',', L - 1);
+            if (cut < L * 0.4) cut = s.lastIndexOf(' ', L - 1);
+            const take = cut < 1 ? L : cut + 1;
             push();
             out.push(s.slice(0, take).trim());
             s = s.slice(take).trim();
         }
         if (!s) continue;
-        if (cur && (cur + ' ' + s).length > max) push();
+        if (cur && (cur + ' ' + s).length > lim()) push();
         cur = cur ? cur + ' ' + s : s;
     }
     push();
@@ -694,7 +696,8 @@ function buildTimeline(el, max) {
         const t = cleanForTts(buf);
         buf = '';
         if (!/[\p{L}\p{N}]/u.test(t)) return;
-        chunkText(t, max).forEach(c => items.push({ kind: 'tts', text: c }));
+        chunkText(t, max, items.some(i => i.kind === 'tts') ? max : Math.min(max, 90))
+            .forEach(c => items.push({ kind: 'tts', text: c }));
     };
     const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
     while (walker.nextNode()) {
@@ -741,25 +744,40 @@ async function requestTts(text, ref, run) {
         const fText = (s.ttsFieldText || 'text').trim();
         const fLang = (s.ttsFieldLang || 'language').trim();
         const fRef = (s.ttsFieldRef || 'speaker_wav').trim();
-        const headers = {};
-        if (/ngrok/i.test(url)) headers['ngrok-skip-browser-warning'] = '1';
-        let body;
-        if (s.ttsMode === 'json') {
-            headers['Content-Type'] = 'application/json';
-            const o = { [fText]: text, [fLang]: s.ttsLang };
-            if (ref) {
-                if (!REF_B64.has(ref.id)) REF_B64.set(ref.id, await blobToB64(ref.blob));
-                o[fRef] = REF_B64.get(ref.id);
-            }
-            body = JSON.stringify(o);
-        } else {
-            body = new FormData();
-            body.append(fText, text);
-            body.append(fLang, s.ttsLang);
-            if (ref) body.append(fRef, ref.blob, ref.name || 'referencia.wav');
-        }
+        const isJson = s.ttsMode === 'json';
+        const baseHeaders = {};
+        if (/ngrok/i.test(url)) baseHeaders['ngrok-skip-browser-warning'] = '1';
+        const refKey = ref ? `${ref.id}-${ref.blob.size}` : '';
+        const knownKey = url + '|' + refKey;
 
-        const res = await fetch(url, { method: 'POST', headers, body, signal: ctrl.signal });
+        const makeReq = async (withFile) => {
+            const headers = Object.assign({}, baseHeaders);
+            if (isJson) {
+                headers['Content-Type'] = 'application/json';
+                const o = { [fText]: text, [fLang]: s.ttsLang };
+                if (ref) {
+                    if (!REF_B64.has(ref.id)) REF_B64.set(ref.id, await blobToB64(ref.blob));
+                    o[fRef] = REF_B64.get(ref.id);
+                }
+                return { headers, body: JSON.stringify(o) };
+            }
+            const fd = new FormData();
+            fd.append(fText, text);
+            fd.append(fLang, s.ttsLang);
+            if (ref) {
+                fd.append('ref_key', refKey);
+                if (withFile) fd.append(fRef, ref.blob, ref.name || 'referencia.wav');
+            }
+            return { headers, body: fd };
+        };
+        const send = async (withFile) => fetch(url, { method: 'POST', signal: ctrl.signal, ...(await makeReq(withFile)) });
+
+        let res = await send(!(ref && !isJson && KNOWN_REFS.has(knownKey)));
+        if (res.status === 428 && ref && !isJson) {
+            KNOWN_REFS.delete(knownKey);
+            res = await send(true);
+        }
+        if (res.ok && ref && !isJson && res.headers.get('x-ref-cached') === '1') KNOWN_REFS.add(knownKey);
         if (!res.ok) {
             const detail = (await res.text().catch(() => '')).replace(/\s+/g, ' ').slice(0, 200);
             throw new Error(`O servidor TTS respondeu HTTP ${res.status}. ${detail}`);
