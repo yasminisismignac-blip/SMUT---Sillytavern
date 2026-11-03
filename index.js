@@ -1,17 +1,21 @@
-import { sfxDirective } from './sfx.js';
-import { CATEGORIES, PHASES, INTENSITY, DEFAULT_BANNED, DEFAULT_KEYWORDS, DEFAULT_LIMITS } from './data.js';
+// ============================================
+// Smut Forge 🔥 — SillyTavern Extension (v2.1.0)
+// Main module: settings, cards, interceptor, UI, commands.
+// ============================================
+import { CATEGORIES, INTENSITY, PHASES, DEFAULT_LIMITS, DEFAULT_BANNED, DEFAULT_KEYWORDS } from './data.js';
+import { sfxDirective } from './sfx.js'; // assume sfx.js exists with the directive from your snippet
 
 const MODULE = 'smut_forge';
 const KEY_BASE = 'smut_forge_base';
 const KEY_CARD = 'smut_forge_card';
-const POS_IN_CHAT = 1;   // extension_prompt_types.IN_CHAT
-const ROLE_SYSTEM = 0;   // extension_prompt_roles.SYSTEM
+const POS_IN_CHAT = 1;
+const ROLE_SYSTEM = 0;
 
 const ctx = () => SillyTavern.getContext();
 
 const DEFAULTS = Object.freeze({
     enabled: true,
-    mode: 'auto',            // manual | auto | always
+    mode: 'auto',
     sceneActive: false,
     intensity: 2,
     phase: 'none',
@@ -26,43 +30,41 @@ const DEFAULTS = Object.freeze({
     keywords: DEFAULT_KEYWORDS,
 });
 
-let pending = [];     // cartas na fila
-let consumed = false; // já foram usadas numa geração?
+let pending = [];
+let consumed = false;
 let aiCounter = 0;
 
-// ---------- Settings ----------
-function S() {
+const s = () => {
     const es = ctx().extensionSettings;
     if (!es[MODULE]) es[MODULE] = structuredClone(DEFAULTS);
     for (const k of Object.keys(DEFAULTS)) {
         if (!Object.hasOwn(es[MODULE], k)) es[MODULE][k] = DEFAULTS[k];
     }
     return es[MODULE];
-}
+};
 const save = () => ctx().saveSettingsDebounced();
-const sub = (t) => ctx().substituteParams(t);
-const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-// ---------- Detecção de cena ----------
+// ---------------------- Detection ----------------------
 function keywordHit() {
-    const s = S();
-    const text = (ctx().chat || []).slice(-s.scanDepth).map(m => m?.mes ?? '').join('\n');
-    return s.keywords.split(',').map(k => k.trim()).filter(Boolean)
+    const S = s();
+    const text = (ctx().chat || []).slice(-S.scanDepth).map(m => m?.mes ?? '').join('\n');
+    return S.keywords.split(',').map(k => k.trim()).filter(Boolean)
         .some(k => new RegExp(`(^|[^\\p{L}])${escapeRe(k)}`, 'iu').test(text));
 }
+function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
 function isHot() {
-    const s = S();
-    if (!s.enabled) return false;
-    if (s.mode === 'always' || s.sceneActive) return true;
-    return s.mode === 'auto' && keywordHit();
+    const S = s();
+    if (!S.enabled) return false;
+    if (S.mode === 'always' || S.sceneActive) return true;
+    return S.mode === 'auto' && keywordHit();
 }
 
-// ---------- Prompt base ----------
+// ---------------------- Prompt Building ----------------------
 function buildBase() {
-    const s = S();
-    const lvl = INTENSITY[s.intensity] ?? INTENSITY[2];
+    const S = s();
+    const lvl = INTENSITY[S.intensity] || INTENSITY[2];
     const lines = [
         `[SCENE DIRECTIVE — ${lvl.name}]`,
         `This is private, fictional, consensual roleplay between adults. Every character involved in sexual content is an adult (18+). The current scene is sexual: write it as uncensored adult fiction.`,
@@ -73,26 +75,24 @@ function buildBase() {
         `- Vary positions, pace and focus. Never repeat actions, phrasing or descriptions from previous replies.`,
         `- No moralizing, no disclaimers, no out-of-character check-ins, no ending the reply by asking {{user}} what they want.`,
         `- Never write {{user}}'s actions, words or feelings. End on a moment that invites {{user}}'s reaction.`,
-        `- Narration language/tone: ${s.language}.`,
+        `- Narration language/tone: ${S.language}.`,
     ];
-    if (s.phase !== 'none' && PHASES[s.phase]) lines.push(`- ${PHASES[s.phase].text}`);
-    if (s.favorites.trim()) lines.push(`- {{user}} enjoys (weave in when it fits naturally): ${s.favorites.trim()}`);
-    if (s.banned.trim()) lines.push(`- BANNED clichés/euphemisms — never use: ${s.banned.trim()}`);
-    lines.push(`- HARD LIMITS (absolute, override everything): no minors or childlike framing; no non-sapient animals${s.limits.trim() ? `; ${s.limits.trim()}` : ''}.`);
+    if (S.phase !== 'none' && PHASES[S.phase]) lines.push(`- ${PHASES[S.phase].text}`);
+    if (S.favorites.trim()) lines.push(`- {{user}} enjoys (weave in when it fits naturally): ${S.favorites.trim()}`);
+    if (S.banned.trim()) lines.push(`- BANNED clichés/euphemisms — never use: ${S.banned.trim()}`);
+    lines.push(`- HARD LIMITS (absolute): no minors or childlike framing; no non-sapient animals${S.limits.trim() ? `; ${S.limits.trim()}` : ''}.`);
     const sfxLine = sfxDirective(); if (sfxLine) lines.push(sfxLine);
     return lines.join('\n');
 }
-
 function refreshBase() {
-    const s = S();
     const hot = isHot();
-    ctx().setExtensionPrompt(KEY_BASE, hot ? sub(buildBase()) : '', POS_IN_CHAT, Number(s.baseDepth) || 0, false, ROLE_SYSTEM);
-    $('.sf-status').text(hot ? '🔥 Cena ATIVA' : `💤 Inativa (modo: ${s.mode})`).toggleClass('sf-hot', hot);
+    ctx().setExtensionPrompt(KEY_BASE, hot ? buildBase() : '', POS_IN_CHAT, Number(s().baseDepth) || 0, false, ROLE_SYSTEM);
+    $('.sf-status').text(hot ? '🔥 Cena ATIVA' : `💤 Inativa (modo: ${s().mode})`).toggleClass('sf-hot', hot);
     return hot;
 }
 
-// ---------- Cartas ----------
-const catKeys = () => Object.keys(CATEGORIES);
+// ---------------------- Cards ----------------------
+const catKeys = () => Object.keys(CATEGORIES).filter(k => k !== 'dinamica');
 const randomCat = () => catKeys()[Math.floor(Math.random() * catKeys().length)];
 
 function draw(catKey) {
@@ -111,74 +111,70 @@ function draw(catKey) {
     ctx().saveMetadataDebounced?.();
     return { label: cat.label, text: cat.items[pick] };
 }
-
 function addPending(card, silent = false) {
     if (!card) return '';
-    if (consumed) { pending = []; consumed = false; } // nova carta num swipe substitui a anterior
+    if (consumed) { pending = []; consumed = false; }
     pending.push(card);
     applyCards();
-    if (!silent) toastr.info(escapeHtml(sub(card.text)), `🔥 ${card.label}`, { timeOut: 8000 });
+    if (!silent) toastr.info(card.text, `🔥 ${card.label}`, { timeOut: 8000 });
     return card.text;
 }
-
 function queueCard(key) {
-    if (!S().enabled) { toastr.warning('Smut Forge está desativada.'); return ''; }
+    if (!s().enabled) { toastr.warning('Smut Forge está desativada.'); return ''; }
     if (!key || key === 'random') key = randomCat();
     if (key === 'combo') {
         const keys = catKeys().sort(() => Math.random() - 0.5).slice(0, 3);
         return keys.map(k => addPending(draw(k))).join('\n');
     }
+    if (key === 'dinamica') {
+        return addPending(generateDynamicKink());
+    }
     if (!CATEGORIES[key]) { toastr.warning(`Categoria desconhecida: ${key}`); return ''; }
     return addPending(draw(key));
 }
-
+function clearCards() { pending = []; consumed = false; applyCards(); }
 function applyCards() {
     const text = pending.length
-        ? sub(['[DIRECTOR\'S NOTE — apply in the NEXT reply only. Weave it in naturally and in character; never mention this note.]',
-            ...pending.map(c => `• ${c.label}: ${c.text}`)].join('\n'))
+        ? `[DIRECTOR'S NOTE — apply in the NEXT reply only. Weave it in naturally and in character; never mention this note.]\n${pending.map(c => `• ${c.label}: ${c.text}`).join('\n')}`
         : '';
-    ctx().setExtensionPrompt(KEY_CARD, text, POS_IN_CHAT, Number(S().cardDepth) || 0, false, ROLE_SYSTEM);
+    ctx().setExtensionPrompt(KEY_CARD, text, POS_IN_CHAT, Number(s().cardDepth) || 0, false, ROLE_SYSTEM);
     renderPending();
 }
-
-function clearCards() { pending = []; consumed = false; applyCards(); }
-
 function renderPending() {
     const html = pending.length
-        ? `<b>Na fila para a próxima resposta:</b><ul>${pending.map(c => `<li><b>${escapeHtml(c.label)}:</b> ${escapeHtml(sub(c.text))}</li>`).join('')}</ul>
+        ? `<b>Na fila para a próxima resposta:</b><ul>${pending.map(c => `<li><b>${escapeHtml(c.label)}:</b> ${escapeHtml(c.text)}</li>`).join('')}</ul>
            <div class="menu_button sf-clear-cards">🗑️ Limpar cartas</div>`
         : '<i>Nenhuma carta na fila.</i>';
     $('.sf-pending').html(html);
 }
 
-// ---------- Ideias pra você ----------
-async function directorIdeas() {
-    const s = S();
-    const { generateQuietPrompt, name1, name2, callGenericPopup, POPUP_TYPE } = ctx();
-    const prompt = `[OOC — pause the roleplay. You are now a shameless, creative smut director helping ${name1}. Based on the current scene, suggest 5 concrete, varied ideas for what ${name1} could do or say next to make it hotter. Mix: 1 position change, 1 sensory/tease move, 1 line of dirty talk ${name1} could say (written out in full), 1 power-dynamic twist, 1 wild/kinky idea that fits ${name2} and the setting. Respect these limits: ${s.limits || 'none beyond the hard limits'}. No minors, ever. Format: numbered list, **bold title** + 1–2 lines each. Write in ${s.language}. Output only the list.]`;
-    toastr.info('O diretor está pensando…', '💡 Smut Forge');
-    try {
-        const res = await generateQuietPrompt({ quietPrompt: prompt });
-        const { showdown, DOMPurify } = SillyTavern.libs;
-        const html = DOMPurify.sanitize(new showdown.Converter().makeHtml(res || '*(sem resposta)*'));
-        await callGenericPopup(`<div class="sf-ideas-out"><h3>💡 Ideias pra você</h3>${html}</div>`, POPUP_TYPE.TEXT, '', { allowVerticalScrolling: true });
-    } catch (e) {
-        console.error('[SmutForge]', e);
-        toastr.error('Falha ao gerar ideias. Veja o console.');
-    }
+// ---------------------- Dynamic Kink Generation ----------------------
+function generateDynamicKink() {
+    // Procedural generation: picks one item from 3 random categories + a random intensity + a random phase bias
+    const cats = catKeys();
+    const catA = CATEGORIES[cats[Math.floor(Math.random() * cats.length)]];
+    const catB = CATEGORIES[cats[Math.floor(Math.random() * cats.length)]];
+    const catC = CATEGORIES[cats[Math.floor(Math.random() * cats.length)]];
+    const intensity = INTENSITY[Math.floor(Math.random() * 3) + 1];
+    const phase = PHASES[Object.keys(PHASES)[Math.floor(Math.random() * Object.keys(PHASES).length)]];
+    const emoji = ['🔥', '⛓️', '💦', '🗣️', '🔄'][Math.floor(Math.random() * 5)];
+    const position = draw(randomCat());
+    const sensory = draw(randomCat());
+    const talk = draw(randomCat());
+    const scenario = draw(randomCat());
+    const base = `${emoji} Dinâmica gerada: ${intensity.name} • ${phase.label}`;
+    const detail = `Posição: ${position?.text?.slice(0, 60) || '—'} | Estímulo: ${sensory?.text?.slice(0, 60) || '—'} | Talk: ${talk?.text?.slice(0, 60) || '—'} | Cenário: ${scenario?.text?.slice(0, 60) || '—'}`;
+    return { label: `Kink ${pending.length + 1}`, text: `${base}\n${detail}` };
 }
 
-async function customCard() {
-    const txt = await ctx().Popup.show.input('✍️ Instrução livre', 'O que você quer que aconteça na próxima resposta?', '');
-    if (txt && String(txt).trim()) addPending({ label: 'Livre', text: String(txt).trim() });
-}
-
-// ---------- UI ----------
+// ---------------------- UI ----------------------
 function panelHtml() {
     const phaseOpts = [`<option value="none">— Sem fase —</option>`,
         ...Object.entries(PHASES).map(([k, p]) => `<option value="${k}">${p.label}</option>`)].join('');
-    const btns = Object.entries(CATEGORIES)
+    const catButtons = Object.entries(CATEGORIES)
+        .filter(([k]) => k !== 'dinamica')
         .map(([k, c]) => `<div class="menu_button" data-sf-card="${k}">${c.emoji} ${c.label}</div>`).join('');
+    const dynBtn = `<div class="menu_button sf-dyn-gen-btn">🌀 Gerar Kink Dinâmico</div>`;
     return `
     <div class="sf-panel">
       <div class="sf-statusbar">
@@ -187,23 +183,22 @@ function panelHtml() {
       </div>
       <label>Fase da cena</label>
       <select class="text_pole sf-phase">${phaseOpts}</select>
-      <div class="sf-grid">${btns}</div>
+      <div class="sf-grid">${catButtons}</div>
       <div class="sf-grid">
         <div class="menu_button" data-sf-card="random">🎲 Roleta</div>
         <div class="menu_button" data-sf-card="combo">🃏 Combo x3</div>
+        ${dynBtn}
         <div class="menu_button sf-custom">✍️ Instrução livre</div>
         <div class="menu_button sf-ideas">💡 Ideias pra MIM</div>
       </div>
       <div class="sf-pending"></div>
     </div>`;
 }
-
 function syncPanel() {
-    $('.sf-phase').val(S().phase);
+    $('.sf-phase').val(s().phase);
     refreshBase();
     renderPending();
 }
-
 function settingsHtml() {
     return `
     <div id="smutforge_settings">
@@ -224,79 +219,96 @@ function settingsHtml() {
           </select>
           <label for="sf_intensity">Intensidade</label>
           <select id="sf_intensity" class="text_pole">
-            <option value="1">1 — Picante (sensual e explícito)</option>
-            <option value="2">2 — Explícito (gráfico e direto)</option>
-            <option value="3">3 — Selvagem (cru, chulo, sem freio)</option>
+            <option value="1">1 — Picante</option>
+            <option value="2">2 — Explícito</option>
+            <option value="3">3 — Selvagem</option>
           </select>
-          <label for="sf_language">Idioma / tom da narração</label>
-          <input id="sf_language" class="text_pole" type="text">
+          <label for="sf_language">Idioma / tom</label>
+          <input id="sf_language" class="text_pole" type="text" value="${s().language}">
           <div class="sf-row">
-            <div><label for="sf_baseDepth">Profundidade das regras</label><input id="sf_baseDepth" class="text_pole" type="number" min="0" max="20"></div>
-            <div><label for="sf_cardDepth">Profundidade das cartas</label><input id="sf_cardDepth" class="text_pole" type="number" min="0" max="10"></div>
+            <div><label for="sf_baseDepth">Profundidade regras</label><input id="sf_baseDepth" class="text_pole" type="number" min="0" max="20" value="${s().baseDepth}"></div>
+            <div><label for="sf_cardDepth">Profundidade cartas</label><input id="sf_cardDepth" class="text_pole" type="number" min="0" max="10" value="${s().cardDepth}"></div>
           </div>
           <div class="sf-row">
-            <div><label for="sf_scanDepth">Msgs analisadas (auto)</label><input id="sf_scanDepth" class="text_pole" type="number" min="1" max="20"></div>
-            <div><label for="sf_autoRollEvery">Carta automática a cada N respostas (0 = off)</label><input id="sf_autoRollEvery" class="text_pole" type="number" min="0" max="20"></div>
+            <div><label for="sf_scanDepth">Msgs analisadas (auto)</label><input id="sf_scanDepth" class="text_pole" type="number" min="1" max="20" value="${s().scanDepth}"></div>
+            <div><label for="sf_autoRollEvery">Carta automática a cada N respostas</label><input id="sf_autoRollEvery" class="text_pole" type="number" min="0" max="20" value="${s().autoRollEvery}"></div>
           </div>
-          <label for="sf_favorites">Meus kinks favoritos (o modelo usa quando encaixar)</label>
-          <textarea id="sf_favorites" class="text_pole" rows="2" placeholder="ex: puxão de cabelo, elogios, espelho, marcas de mordida"></textarea>
+          <label for="sf_favorites">Meus kinks favoritos</label>
+          <textarea id="sf_favorites" class="text_pole" rows="2" placeholder="ex: puxão de cabelo, elogios, espelho, marcas de mordida">${s().favorites}</textarea>
           <label for="sf_limits">Meus limites (NUNCA incluir)</label>
-          <textarea id="sf_limits" class="text_pole" rows="2"></textarea>
+          <textarea id="sf_limits" class="text_pole" rows="2">${s().limits}</textarea>
           <label for="sf_banned">Clichês / eufemismos proibidos</label>
-          <textarea id="sf_banned" class="text_pole" rows="3"></textarea>
-          <label for="sf_keywords">Palavras-chave do modo automático (vírgula; casam no início da palavra)</label>
-          <textarea id="sf_keywords" class="text_pole" rows="3"></textarea>
+          <textarea id="sf_banned" class="text_pole" rows="3">${s().banned}</textarea>
+          <label for="sf_keywords">Palavras-chave do modo automático (vírgula)</label>
+          <textarea id="sf_keywords" class="text_pole" rows="3">${s().keywords}</textarea>
           <div class="menu_button" id="sf_preview">👁️ Ver o que está sendo injetado</div>
         </div>
       </div>
     </div>`;
 }
-
 function bindSetting(id, key, parse = v => v) {
     const $el = $(`#${id}`);
     const isCb = $el.is(':checkbox');
-    isCb ? $el.prop('checked', !!S()[key]) : $el.val(S()[key]);
+    isCb ? $el.prop('checked', !!s()[key]) : $el.val(s()[key]);
     $el.on('input change', () => {
-        S()[key] = isCb ? $el.prop('checked') : parse($el.val());
+        s()[key] = isCb ? $el.prop('checked') : parse($el.val());
         save();
         refreshBase();
         applyCards();
     });
 }
-
 function bindGlobalHandlers() {
     $(document)
         .on('click', '[data-sf-card]', function () { queueCard(this.dataset.sfCard); })
         .on('click', '.sf-clear-cards', clearCards)
-        .on('click', '.sf-custom', customCard)
-        .on('click', '.sf-ideas', directorIdeas)
+        .on('click', '.sf-custom', () => { const txt = ctx().Popup.show.input('✍️ Instrução livre', '', ''); if (txt && String(txt).trim()) addPending({ label: 'Livre', text: String(txt).trim() }); })
+        .on('click', '.sf-ideas', async () => { await directorIdeas(); })
         .on('click', '.sf-toggle-scene', () => {
-            S().sceneActive = !S().sceneActive; save();
-            toastr.info(S().sceneActive ? 'Cena forçada: ON 🔥' : 'Cena forçada: OFF');
+            s().sceneActive = !s().sceneActive; save();
+            toastr.info(s().sceneActive ? 'Cena forçada: ON 🔥' : 'Cena forçada: OFF');
             refreshBase();
         })
         .on('change', '.sf-phase', function () {
-            S().phase = this.value; save();
+            s().phase = this.value; save();
             $('.sf-phase').val(this.value);
             refreshBase();
+        })
+        .on('click', '.sf-dyn-gen-btn', () => {
+            const newKink = generateDynamicKink();
+            addPending(newKink, true); // silent, then show toast
+            toastr.info(newKink.text, `🌀 ${newKink.label}`, { timeOut: 10000 });
+            // optionally add a visual pill in the panel
+            renderPending();
         });
 }
-
 function openPanelPopup() {
     const { callGenericPopup, POPUP_TYPE } = ctx();
     callGenericPopup(panelHtml(), POPUP_TYPE.DISPLAY, '', { allowVerticalScrolling: true });
     setTimeout(syncPanel, 50);
 }
-
 async function showPreview() {
     const { callGenericPopup, POPUP_TYPE } = ctx();
-    const base = isHot() ? sub(buildBase()) : '(regras inativas no momento — cena não detectada)';
-    const cards = pending.length ? pending.map(c => `• ${c.label}: ${sub(c.text)}`).join('\n') : '(nenhuma)';
+    const base = isHot() ? buildBase() : '(regras inativas no momento — cena não detectada)';
+    const cards = pending.length ? pending.map(c => `• ${c.label}: ${c.text}`).join('\n') : '(nenhuma)';
     await callGenericPopup(`<h3>Regras</h3><pre class="sf-pre">${escapeHtml(base)}</pre><h3>Cartas</h3><pre class="sf-pre">${escapeHtml(cards)}</pre>`,
         POPUP_TYPE.TEXT, '', { wide: true, allowVerticalScrolling: true });
 }
+async function directorIdeas() {
+    const { generateQuietPrompt, name1, name2, callGenericPopup, POPUP_TYPE } = ctx();
+    const prompt = `[OOC — pause the roleplay. You are now a shameless, creative smut director helping ${name1}. Based on the current scene, suggest 5 concrete, varied ideas for what ${name1} could do or say next to make it hotter. Mix: 1 position change, 1 sensory/tease move, 1 line of dirty talk ${name1} could say (written out in full), 1 power-dynamic twist, 1 wild/kinky idea that fits ${name2} and the setting. Respect these limits: ${s().limits || 'none beyond the hard limits'}. No minors, ever. Format: numbered list, **bold title** + 1–2 lines each. Write in ${s().language}. Output only the list.]`;
+    toastr.info('O diretor está pensando…', '💡 Smut Forge');
+    try {
+        const res = await generateQuietPrompt({ quietPrompt: prompt });
+        const { showdown, DOMPurify } = SillyTavern.libs;
+        const html = DOMPurify.sanitize(new showdown.Converter().makeHtml(res || '*(sem resposta)*'));
+        await callGenericPopup(`<div class="sf-ideas-out"><h3>💡 Ideias pra você</h3>${html}</div>`, POPUP_TYPE.TEXT, '', { allowVerticalScrolling: true });
+    } catch (e) {
+        console.error('[SmutForge]', e);
+        toastr.error('Falha ao gerar ideias. Veja o console.');
+    }
+}
 
-// ---------- Slash commands ----------
+// ---------------------- Slash Commands ----------------------
 function registerCommands() {
     const { SlashCommandParser, SlashCommand, SlashCommandArgument, ARGUMENT_TYPE } = ctx();
     if (!SlashCommandParser) return;
@@ -307,23 +319,23 @@ function registerCommands() {
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'smut-card',
         callback: (_a, v) => queueCard(String(v || 'random').trim()),
-        unnamedArgumentList: arg('categoria', [...catKeys(), 'random', 'combo']),
-        helpString: 'Coloca uma carta criativa na fila para a próxima resposta. Ex: <code>/smut-card posicao</code>',
+        unnamedArgumentList: arg('categoria', [...catKeys(), 'random', 'combo', 'dinamica']),
+        helpString: 'Coloca uma carta criativa na fila. Ex: <code>/smut-card posicao</code>',
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'smut-scene',
         callback: (_a, v) => {
             const val = String(v || 'toggle').trim();
-            S().sceneActive = val === 'toggle' ? !S().sceneActive : val === 'on';
+            s().sceneActive = val === 'toggle' ? !s().sceneActive : val === 'on';
             save(); refreshBase();
-            return String(S().sceneActive);
+            return String(s().sceneActive);
         },
         unnamedArgumentList: arg('on | off | toggle', ['on', 'off', 'toggle']),
         helpString: 'Força a cena explícita ON/OFF.',
     }));
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'smut-phase',
-        callback: (_a, v) => { S().phase = String(v || 'none').trim(); save(); syncPanel(); return S().phase; },
+        callback: (_a, v) => { s().phase = String(v || 'none').trim(); save(); syncPanel(); return s().phase; },
         unnamedArgumentList: arg('fase', ['none', ...Object.keys(PHASES)]),
         helpString: 'Define a fase da cena.',
     }));
@@ -339,12 +351,16 @@ function registerCommands() {
         name: 'smut-panel', callback: () => { openPanelPopup(); return ''; },
         helpString: 'Abre o painel do Smut Forge.',
     }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'smut-dynamic', callback: () => { const k = generateDynamicKink(); addPending(k, true); toastr.info(k.text, `🌀 ${k.label}`, { timeOut: 10000 }); return ''; },
+        helpString: 'Gera um kink procedural aleatório e adiciona na fila.',
+    }));
 }
 
-// ---------- Interceptor (roda antes de cada geração) ----------
+// ---------------------- Interceptor ----------------------
 globalThis.smutForgeInterceptor = async function (chat, contextSize, abort, type) {
     try {
-        if (!S().enabled) {
+        if (!s().enabled) {
             ctx().setExtensionPrompt(KEY_BASE, '', POS_IN_CHAT, 0);
             ctx().setExtensionPrompt(KEY_CARD, '', POS_IN_CHAT, 0);
             return;
@@ -357,7 +373,7 @@ globalThis.smutForgeInterceptor = async function (chat, contextSize, abort, type
     }
 };
 
-// ---------- Init ----------
+// ---------------------- Init ----------------------
 jQuery(async () => {
     try {
         $('#extensions_settings2').append(settingsHtml());
@@ -375,7 +391,7 @@ jQuery(async () => {
         bindSetting('sf_keywords', 'keywords');
         $('#sf_preview').on('click', showPreview);
 
-        // Item no menu da varinha mágica (🪄)
+        // Item no menu da varinha mágica
         $('#extensionsMenu').append(`
           <div id="sf_wand" class="list-group-item flex-container flexGap5 interactable" tabindex="0">
             <div class="fa-solid fa-fire extensionsMenuExtensionButton"></div>
@@ -390,15 +406,15 @@ jQuery(async () => {
         eventSource.on(eventTypes.MESSAGE_SENT, () => { if (consumed) clearCards(); refreshBase(); });
         eventSource.on(eventTypes.MESSAGE_RECEIVED, (_id, type) => {
             refreshBase();
-            const s = S();
-            if (!s.enabled || !s.autoRollEvery || type === 'quiet' || !isHot()) return;
-            if (++aiCounter % s.autoRollEvery === 0) {
+            const S = s();
+            if (!S.enabled || !S.autoRollEvery || type === 'quiet' || !isHot()) return;
+            if (++aiCounter % S.autoRollEvery === 0) {
                 pending = []; consumed = false;
                 addPending(draw(randomCat()));
             }
         });
         eventSource.on(eventTypes.CHAT_CHANGED, () => {
-            S().sceneActive = false; save();
+            s().sceneActive = false; save();
             aiCounter = 0;
             clearCards();
             syncPanel();
