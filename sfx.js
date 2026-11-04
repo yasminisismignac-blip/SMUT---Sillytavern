@@ -62,9 +62,9 @@ export function sfxDirective() {
     const s = SX();
     if (!s.prompt) return '';
     const dens = {
-        low: 'a few times (2-4 per reply)',
-        med: 'frequently (5-9 per reply)',
-        high: 'a LOT (10+ per reply, comic-book / hentai-style barrages)',
+        low: 'sparingly, only where a sound really lands',
+        med: 'frequently, woven through the whole scene as the rhythm demands',
+        high: 'abundantly, comic-book / hentai-style barrages whenever the action peaks',
     }[s.density] || 'frequently';
     return '- SOUND EFFECTS: use dirty, graphic onomatopoeia ' + dens + ' — wet sounds, skin slapping, sucking, kisses, gulping, bed creaking, heartbeat, panting, growls, toy buzzing, fabric ripping, and stretched-out moans. ' +
         'Wrap EVERY onomatopoeia in double square brackets, with no other formatting inside them: [[PLAP]] [[shlick]] [[slurrp]] [[nhec nhec]] [[glk]] [[haah]] [[aahn~]] [[tu-dum]] [[bzzzz]] [[rrrip]]. ' +
@@ -74,7 +74,7 @@ export function sfxDirective() {
 }
 
 CATEGORIES.sons = { emoji: '🔊', label: 'Sons', items: [
-    'Sound barrage: fill this reply with graphic onomatopoeia — at least 8, each wrapped in [[ ]], with one burst stacked alone on its own line.',
+    'Sound barrage: fill this reply with graphic onomatopoeia, each wrapped in [[ ]], with at least one burst stacked alone on its own line.',
     'Wet focus: the scene is told through its wet sounds — [[shlick]], [[chlap]], [[squelch]], [[ploc]] — getting louder as it intensifies.',
     'Rhythm through sound: start with soft, spaced-out lowercase [[plap…]] and build into a frantic stacked line of [[PLAP!]] [[PLAP!]] [[PLAP!]].',
     'Moan escalation: {{char}}\'s moans escalate across the reply — [[mmh…]] → [[ahh]] → [[aahn~]] → [[AAAHN!]] — getting longer and less controlled.',
@@ -281,8 +281,8 @@ function settingsHtml() {
           <label class="checkbox_label"><input type="checkbox" id="sfx_prompt"><span>Pedir ao modelo MUITAS onomatopeias (em [[colchetes]])</span></label>
           <label for="sfx_density">Quantidade de onomatopeias</label>
           <select id="sfx_density" class="text_pole">
-            <option value="low">Pouca (2–4 por resposta)</option>
-            <option value="med">Média (5–9 por resposta)</option>
+            <option value="low">Pouca (só nos momentos-chave)</option>
+            <option value="med">Média (ao longo da cena)</option>
             <option value="high">MUITA (estilo hentai/HQ)</option>
           </select>
           <label class="checkbox_label"><input type="checkbox" id="sfx_visual"><span>Visual colorido nas onomatopeias</span></label>
